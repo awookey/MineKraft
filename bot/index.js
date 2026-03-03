@@ -900,9 +900,25 @@ async function equipBestToolForBlock(block) {
 
 function isUnsafeDigTarget(block) {
   if (!bot?.entity || !block?.position) return false
-  const feetY = Math.floor(bot.entity.position.y)
-  // avoid tunneling under ourselves and getting trapped in holes
-  return block.position.y < feetY - 1
+
+  const feet = bot.entity.position
+  const feetY = Math.floor(feet.y)
+  const targetCenter = block.position.offset(0.5, 0.5, 0.5)
+  const closeRange = feet.distanceTo(targetCenter) < 2.1
+
+  // hard-stop straight-down / 1x1 shaft behavior
+  if (block.position.y <= feetY - 1 && closeRange) return true
+  // avoid tunneling too far below current level
+  if (block.position.y < feetY - 1) return true
+
+  // keep mining roughly near anchor elevation so bot can return to surface easier
+  const anchor = nearestAnchorForAuto() || nearestHumanPlayer()
+  if (anchor) {
+    const anchorY = Math.floor(anchor.position.y)
+    if (block.position.y < anchorY - 3) return true
+  }
+
+  return false
 }
 
 function isWaterHazardTarget(block) {
@@ -1093,6 +1109,61 @@ function isUnsafeBuildClearTarget(targetPos) {
   const feetY = Math.floor(bot.entity.position.y)
   const dist = bot.entity.position.distanceTo(targetPos.offset(0.5, 0.5, 0.5))
   return targetPos.y <= feetY - 1 || (targetPos.y <= feetY && dist < 1.8)
+}
+
+function isLikelyOneByOneTrap() {
+  if (!bot?.entity) return false
+  const p = bot.entity.position.floored()
+  const below = bot.blockAt(p.offset(0, -1, 0))
+  if (!below || isAirBlock(below)) return false
+
+  const sides = [
+    p.offset(1, 0, 0),
+    p.offset(-1, 0, 0),
+    p.offset(0, 0, 1),
+    p.offset(0, 0, -1)
+  ]
+
+  return sides.every(pos => {
+    const b = bot.blockAt(pos)
+    return b && !isAirBlock(b)
+  })
+}
+
+async function escapeOneByOneTrap() {
+  if (!isLikelyOneByOneTrap()) return false
+
+  const p = bot.entity.position.floored()
+  const exits = [
+    { x: 1, z: 0 },
+    { x: -1, z: 0 },
+    { x: 0, z: 1 },
+    { x: 0, z: -1 }
+  ]
+
+  for (const exit of exits) {
+    const footPos = p.offset(exit.x, 0, exit.z)
+    const headPos = p.offset(exit.x, 1, exit.z)
+    const foot = bot.blockAt(footPos)
+    const head = bot.blockAt(headPos)
+
+    if (!foot || !isClearableBuildBlock(foot) || foot.name.includes('water') || foot.name.includes('lava')) continue
+
+    await equipBestToolForBlock(foot)
+    await bot.dig(foot, true).catch(() => {})
+
+    if (head && !isAirBlock(head) && isClearableBuildBlock(head)) {
+      await equipBestToolForBlock(head)
+      await bot.dig(head, true).catch(() => {})
+    }
+
+    bot.pathfinder.setGoal(new goals.GoalNear(footPos.x, footPos.y, footPos.z, 1))
+    autoState.lastError = 'shaft-escape'
+    autoSay('Escape routine: cutting out of 1x1 shaft.', 8000)
+    return true
+  }
+
+  return false
 }
 
 function structureTemplate(type, palette) {
@@ -2247,6 +2318,11 @@ async function safetyCheck() {
   const inventoryStacks = (bot.inventory.items() || []).length
   if (inventoryStacks > 35) {
     await stashToChest(autoState.job?.owner || cfg.adminUsers[0] || bot.username)
+  }
+
+  if (autoState.job?.kind === 'mine') {
+    const escaped = await escapeOneByOneTrap()
+    if (escaped) return
   }
 
   if (autoState.job && recentPositions.length >= 5) {
