@@ -2079,6 +2079,9 @@ async function cleanupPlacedCraftingTable() {
 }
 
 async function autoMineTick(job) {
+  const p = bot.entity?.position
+  const posStr = p ? `${p.x.toFixed(1)},${p.y.toFixed(1)},${p.z.toFixed(1)}` : 'unknown'
+  console.log('[automine] mcDataRef:', !!mcDataRef, 'blockIds for stone:', blockIdsFromNames(['stone','cobblestone']).join(','), 'bot pos:', posStr)
   autoState.currentStep = `mine:${job.target}`
 
   if (bot.entity.isInWater || lowBreath()) {
