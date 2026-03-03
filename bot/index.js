@@ -2114,7 +2114,11 @@ async function autoMineTick(job) {
       // --- NEW CODE START: bug 3 mining Y-floor guard ---
       if (b.position.y < botY - 4) return false
       // --- NEW CODE END: bug 3 mining Y-floor guard ---
-      return blockIds.includes(b.type)
+      if (!blockIds.includes(b.type)) return false
+      // --- NEW CODE START: skip unsafe under-feet targets in autoMine scan ---
+      if (isUnsafeDigTarget(b)) return false
+      // --- NEW CODE END: skip unsafe under-feet targets in autoMine scan ---
+      return true
     },
     maxDistance: 24
   })
