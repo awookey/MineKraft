@@ -1851,6 +1851,9 @@ async function planTask(job, botRef) {
     const tasks = plannedTasks.length ? plannedTasks : fallbackPlannerTasks(job)
 
     if (!tasks.length) {
+      if (job.kind === 'mine' || job.kind === 'craft') {
+        return true
+      }
       if (!failedTasks.includes('empty-plan')) failedTasks.push('empty-plan')
       continue
     }
@@ -2239,9 +2242,14 @@ async function autoTick() {
 
     // --- NEW CODE START: prerequisite planner gate (step 4) ---
     if (['mine', 'craft', 'build'].includes(job.kind) && !job.planPrepared) {
-      const ready = await planTask(job, bot)
-      if (!ready) return
-      job.planPrepared = true
+      try {
+        const ready = await planTask(job, bot)
+        if (!ready && job.kind === 'build') return
+      } catch (err) {
+        autoState.lastError = `planner-error:${err?.message || 'unknown'}`
+      } finally {
+        job.planPrepared = true
+      }
     }
     // --- NEW CODE END: prerequisite planner gate (step 4) ---
 
