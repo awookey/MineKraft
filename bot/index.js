@@ -1008,10 +1008,10 @@ function collectProfile(rawName) {
     return { blockNames: logSet, countItems: logSet }
   }
 
-  if (name === 'cobblestone') {
+  if (name === 'cobblestone' || name === 'stone') {
     return {
       blockNames: ['cobblestone', 'stone', 'deepslate', 'cobbled_deepslate'],
-      countItems: ['cobblestone', 'cobbled_deepslate']
+      countItems: ['cobblestone', 'stone', 'cobbled_deepslate', 'deepslate']
     }
   }
 
