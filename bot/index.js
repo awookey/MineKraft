@@ -41,6 +41,7 @@ const recentPositions = []
 let lastStuckNudgeAt = 0
 let lastWeaponBootstrapAt = 0
 let lastCombatRetreatAt = 0
+let collectScoutIndex = 0
 let combatRearmAt = 0
 
 const autoState = {
@@ -1005,6 +1006,8 @@ async function collectBlocks(blockName, amount = 1, opts = {}) {
   const countItems = profile.countItems
   const matchingIds = blockIdsFromNames(blockNames)
   const unsafeTargets = new Map()
+  const isStoneSearch = blockNames.some(n => ['stone', 'cobblestone', 'deepslate', 'cobbled_deepslate'].includes(n))
+  const scanDistance = isStoneSearch ? 40 : 24
 
   if (!matchingIds.length) {
     return { ok: false, reason: `unknown-block:${blockName}`, collected: 0, target: targetAmount }
@@ -1037,16 +1040,27 @@ async function collectBlocks(blockName, amount = 1, opts = {}) {
         const avoidUntil = unsafeTargets.get(key) || 0
         return avoidUntil <= Date.now()
       },
-      maxDistance: 24
+      maxDistance: scanDistance
     })
 
     if (!targetBlock) {
+      const scoutOffsets = [
+        [3, 3], [-3, 3], [3, -3], [-3, -3],
+        [8, 0], [-8, 0], [0, 8], [0, -8],
+        [14, 0], [-14, 0], [0, 14], [0, -14]
+      ]
+      const [ox, oz] = scoutOffsets[collectScoutIndex % scoutOffsets.length]
+      collectScoutIndex += 1
+
       const a = nearestAnchorPosition()
       if (a) {
-        bot.pathfinder.setGoal(new goals.GoalNear(a.x + 3, a.y, a.z + 3, 3))
+        bot.pathfinder.setGoal(new goals.GoalNear(a.x + ox, a.y, a.z + oz, 4))
+      } else {
+        const p = bot.entity.position
+        bot.pathfinder.setGoal(new goals.GoalNear(p.x + ox, p.y, p.z + oz, 4))
       }
       autoSay(`No nearby ${blockNames[0]} found, scouting another spot.`, 7000)
-      await new Promise(resolve => setTimeout(resolve, 500))
+      await new Promise(resolve => setTimeout(resolve, 700))
       continue
     }
 
