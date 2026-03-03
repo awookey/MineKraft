@@ -2116,6 +2116,22 @@ async function autoMineTick(job) {
     return autoSay('Regrouping to stay in safe radius.')
   }
 
+  // --- NEW CODE START: stone jobs use collect path first to avoid scan-loop ---
+  if (job.target === 'stone') {
+    const collectResult = await collectBlocks(job.target, job.amount, { timeoutMs: 20_000 })
+    if (collectResult?.ok || plannerItemCount('cobblestone') >= job.amount) {
+      awardXp(job.owner, 120, `auto-mine:${job.target}`)
+      return stopAutoJob(`Auto mine complete: ${job.target} x${job.amount}. Kept materials in inventory for next job.`)
+    }
+    if ((collectResult?.collected || 0) > 0) {
+      autoState.lastError = null
+      return
+    }
+    autoState.lastError = collectResult?.reason || 'stone-collect-timeout'
+    return
+  }
+  // --- NEW CODE END: stone jobs use collect path first to avoid scan-loop ---
+
   // --- NEW CODE START: bug 3 mining Y-floor guard ---
   const botY = Math.floor(bot.entity.position.y)
   const yDepthAllowance = job.target === 'stone' ? 10 : 4
