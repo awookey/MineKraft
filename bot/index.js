@@ -956,6 +956,28 @@ function lowBreath() {
   return Number.isFinite(oxygen) && oxygen <= 8
 }
 
+// --- NEW CODE START: surface dig helper for covered stone targets ---
+async function clearAboveBlock(targetBlock) {
+  if (!targetBlock?.position) return { ok: true, skipped: 'no-target' }
+
+  const abovePos = targetBlock.position.offset(0, 1, 0)
+  const above = bot.blockAt(abovePos)
+  if (!above) return { ok: true, skipped: 'no-above' }
+
+  const n = String(above.name || '')
+  if (n.includes('water') || n.includes('lava') || isAirBlock(above)) {
+    return { ok: true, skipped: 'fluid-or-air' }
+  }
+
+  const clearable = new Set(['grass_block', 'dirt', 'gravel', 'sand', 'rooted_dirt'])
+  if (!clearable.has(above.name)) return { ok: true, skipped: 'not-clearable' }
+
+  await equipBestToolForBlock(above)
+  await bot.dig(above, true).catch(() => {})
+  return { ok: true, cleared: above.name }
+}
+// --- NEW CODE END: surface dig helper for covered stone targets ---
+
 function collectProfile(rawName) {
   const name = String(rawName || '').toLowerCase().trim()
   const logSet = ['oak_log', 'birch_log', 'spruce_log', 'jungle_log', 'acacia_log', 'dark_oak_log', 'mangrove_log', 'cherry_log']
@@ -1055,6 +1077,10 @@ async function collectBlocks(blockName, amount = 1, opts = {}) {
       await new Promise(resolve => setTimeout(resolve, 500))
       continue
     }
+
+    // --- NEW CODE START: clear above target before surface stone dig ---
+    await clearAboveBlock(targetBlock)
+    // --- NEW CODE END: clear above target before surface stone dig ---
 
     await equipBestToolForBlock(targetBlock)
     await bot.dig(targetBlock, true).catch(() => {})
