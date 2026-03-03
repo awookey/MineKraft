@@ -9,6 +9,13 @@ const { pathfinder, goals, Movements } = require('mineflayer-pathfinder')
 const { Vec3 } = require('vec3')
 const pvp = require('mineflayer-pvp').plugin
 
+const nativeWarn = console.warn.bind(console)
+console.warn = (...args) => {
+  const msg = args.map(a => String(a)).join(' ')
+  if (msg.includes('deprecated physicTick')) return
+  nativeWarn(...args)
+}
+
 const dataDir = path.join(__dirname, 'data')
 const profilePath = path.join(dataDir, 'profiles.json')
 const worldStatePath = path.join(dataDir, 'world-state.json')
@@ -942,11 +949,12 @@ function collectProfile(rawName) {
 async function collectBlocks(blockName, amount = 1, opts = {}) {
   const targetAmount = parseAmount(amount, 1, 512)
   const startedAt = Date.now()
-  const timeoutMs = opts.timeoutMs || 30_000
+  const timeoutMs = opts.timeoutMs || Math.min(180_000, Math.max(45_000, targetAmount * 3500))
   const profile = collectProfile(Array.isArray(blockName) ? blockName[0] : blockName)
   const blockNames = profile.blockNames
   const countItems = profile.countItems
   const matchingIds = blockIdsFromNames(blockNames)
+  const unsafeTargets = new Map()
 
   if (!matchingIds.length) {
     return { ok: false, reason: `unknown-block:${blockName}`, collected: 0, target: targetAmount }
@@ -972,7 +980,12 @@ async function collectBlocks(blockName, amount = 1, opts = {}) {
     }
 
     const targetBlock = bot.findBlock({
-      matching: b => matchingIds.includes(b.type),
+      matching: b => {
+        if (!matchingIds.includes(b.type)) return false
+        const key = `${b.position.x},${b.position.y},${b.position.z}`
+        const avoidUntil = unsafeTargets.get(key) || 0
+        return avoidUntil <= Date.now()
+      },
       maxDistance: 24
     })
 
@@ -1002,9 +1015,16 @@ async function collectBlocks(blockName, amount = 1, opts = {}) {
     }
 
     if (isUnsafeDigTarget(targetBlock)) {
-      autoSay('Avoiding unsafe dig below feet. Repositioning.', 6000)
-      bot.pathfinder.setGoal(new goals.GoalNear(targetBlock.position.x, targetBlock.position.y + 1, targetBlock.position.z, 2))
-      await new Promise(resolve => setTimeout(resolve, 300))
+      const unsafeKey = `${targetBlock.position.x},${targetBlock.position.y},${targetBlock.position.z}`
+      unsafeTargets.set(unsafeKey, Date.now() + 12_000)
+      autoSay('Avoiding unsafe dig below feet. Rerouting to safer block.', 12_000)
+      const anchor = nearestAnchorForAuto()
+      if (anchor) {
+        bot.pathfinder.setGoal(new goals.GoalNear(anchor.position.x, anchor.position.y, anchor.position.z, 3))
+      } else {
+        bot.pathfinder.setGoal(new goals.GoalNear(targetBlock.position.x + 2, targetBlock.position.y + 1, targetBlock.position.z + 2, 2))
+      }
+      await new Promise(resolve => setTimeout(resolve, 500))
       continue
     }
 
@@ -1246,6 +1266,15 @@ async function placeStructure(type, opts = {}) {
     .map(p => ({ ...p, pos: origin.offset(p.x, p.y, p.z) }))
     .sort((a, b) => a.pos.y - b.pos.y)
 
+  const uniqueOrdered = []
+  const seenPlacementKeys = new Set()
+  for (const step of ordered) {
+    const key = `${step.pos.x},${step.pos.y},${step.pos.z},${step.item}`
+    if (seenPlacementKeys.has(key)) continue
+    seenPlacementKeys.add(key)
+    uniqueOrdered.push(step)
+  }
+
   let placed = 0
   let skipped = 0
   const done = new Set()
@@ -1254,7 +1283,7 @@ async function placeStructure(type, opts = {}) {
   for (let pass = 1; pass <= 3; pass++) {
     let progress = false
 
-    for (const step of ordered) {
+    for (const step of uniqueOrdered) {
       const key = `${step.pos.x},${step.pos.y},${step.pos.z},${step.item}`
       if (done.has(key)) continue
 
@@ -1285,12 +1314,13 @@ async function placeStructure(type, opts = {}) {
       lastReasons[key] = result.reason || 'place-failed'
     }
 
-    if (done.size === ordered.length) break
+    if (done.size === uniqueOrdered.length) break
     if (!progress && pass >= 2) break
   }
 
-  if (done.size !== ordered.length) {
-    const failed = ordered
+  if (done.size !== uniqueOrdered.length) {
+    const unresolved = uniqueOrdered.filter(step => !done.has(`${step.pos.x},${step.pos.y},${step.pos.z},${step.item}`))
+    const failed = unresolved
       .filter(step => !done.has(`${step.pos.x},${step.pos.y},${step.pos.z},${step.item}`))
       .slice(0, 8)
       .map(step => {
@@ -1298,12 +1328,12 @@ async function placeStructure(type, opts = {}) {
         return { item: step.item, at: [step.pos.x, step.pos.y, step.pos.z], reason: lastReasons[key] || 'unresolved' }
       })
 
-    say(`Build ${buildType} partial: placed ${placed}, failed ${failed.length}.`)
+    say(`Build ${buildType} partial: placed ${placed}, failed ${unresolved.length}.`)
     return { ok: false, reason: 'placement-failed', placed, skipped, failed }
   }
 
   say(`Structure ${buildType} (${materialStyle}) complete. Placed ${placed} blocks.`)
-  return { ok: true, type: buildType, material: materialStyle, placed, skipped, total: ordered.length }
+  return { ok: true, type: buildType, material: materialStyle, placed, skipped, total: uniqueOrdered.length }
 }
 // --- NEW CODE END: skill primitives (step 3) ---
 
@@ -1988,6 +2018,7 @@ let survivalBusy = false
 let lastFoodTryAt = 0
 let lastRetreatSayAt = 0
 let lastSurvivalTickAt = 0
+let lastDaytimeThreatSweepAt = 0
 
 function pickBestItem(namesByPriority) {
   for (const itemName of namesByPriority) {
@@ -2049,6 +2080,17 @@ function nearestHostileMob(maxDistance = 8) {
   })
 }
 
+function nearbyHostiles(maxDistance = 10) {
+  const hostile = new Set([
+    'zombie', 'husk', 'drowned', 'skeleton', 'stray', 'spider', 'cave_spider', 'creeper',
+    'witch', 'pillager', 'vindicator', 'evoker', 'phantom', 'enderman', 'slime', 'magma_cube'
+  ])
+
+  return Object.values(bot.entities || {})
+    .filter(e => e && e.type === 'mob' && hostile.has(e.name) && e.position)
+    .filter(e => bot.entity.position.distanceTo(e.position) <= maxDistance)
+}
+
 async function retreatAndRecover(reason) {
   bot.pvp.stop()
 
@@ -2096,9 +2138,14 @@ async function survivalTick() {
       await retreatAndRecover(lowHealth ? 'low health' : 'bad terrain')
     }
 
-    const hostile = nearestHostileMob(8)
+    const hostileList = nearbyHostiles(8)
+    const hostile = hostileList[0] || null
     if (hostile) {
-      if (hasAnySword()) {
+      const swarmPressure = hostileList.length >= 3
+      const creeperPressure = hostileList.some(e => e.name === 'creeper' && bot.entity.position.distanceTo(e.position) < 4.5)
+      if (swarmPressure || creeperPressure || bot.health <= 13) {
+        await retreatAndRecover(swarmPressure ? 'hostile swarm' : `close ${hostile.name}`)
+      } else if (hasAnySword()) {
         if (!bot.pvp.target) {
           bot.pvp.attack(hostile)
           autoSay(`Defending against ${hostile.name}.`, 6000)
@@ -2161,6 +2208,15 @@ async function safetyCheck() {
     autoState.lastDaytimeSetAt = now
     bot.chat('/time set day')
     autoSay('Daytime lock: setting day for test runs.', 10000)
+  }
+
+  if (autoState.keepDaytime && now - lastDaytimeThreatSweepAt > 12_000) {
+    const daytimeThreats = nearbyHostiles(12)
+    if (daytimeThreats.length > 0) {
+      lastDaytimeThreatSweepAt = now
+      autoSay(`Daytime sweep: ${daytimeThreats.length} hostile(s) still nearby.`, 8000)
+      await survivalTick()
+    }
   }
 
   if (isNight && !autoState.keepDaytime && !nearestHumanPlayer()) {
