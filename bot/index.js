@@ -2083,9 +2083,14 @@ async function cleanupPlacedCraftingTable() {
 }
 
 async function autoMineTick(job) {
+  const blockIds = blockIdsFromNames(job.blocks)
   const p = bot.entity?.position
   const posStr = p ? `${p.x.toFixed(1)},${p.y.toFixed(1)},${p.z.toFixed(1)}` : 'unknown'
   console.log('[automine] mcDataRef:', !!mcDataRef, 'blockIds for stone:', blockIdsFromNames(['stone','cobblestone']).join(','), 'bot pos:', posStr)
+  const testBlock = bot.blockAt(bot.entity.position.offset(0, -1, 0))
+  console.log('[automine] under feet:', testBlock?.name, 'type:', testBlock?.type, 'matches:', blockIds.includes(testBlock?.type))
+  const testFind = bot.findBlock({ matching: b => b && blockIds.includes(b.type), maxDistance: 4 })
+  console.log('[automine] findBlock at range 4:', testFind?.name, testFind?.position)
   autoState.currentStep = `mine:${job.target}`
 
   if (bot.entity.isInWater || lowBreath()) {
@@ -2111,7 +2116,6 @@ async function autoMineTick(job) {
     return autoSay('Regrouping to stay in safe radius.')
   }
 
-  const blockIds = blockIdsFromNames(job.blocks)
   // --- NEW CODE START: bug 3 mining Y-floor guard ---
   const botY = Math.floor(bot.entity.position.y)
   // --- NEW CODE END: bug 3 mining Y-floor guard ---
