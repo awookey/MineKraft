@@ -641,6 +641,17 @@ function nearestAnchorForAuto() {
   return nearestHumanPlayer()
 }
 
+function safeEntityPosition(entity) {
+  const p = entity?.position
+  if (!p) return null
+  if (!Number.isFinite(p.x) || !Number.isFinite(p.y) || !Number.isFinite(p.z)) return null
+  return p
+}
+
+function nearestAnchorPosition() {
+  return safeEntityPosition(nearestAnchorForAuto())
+}
+
 function blockIdsFromNames(names = []) {
   if (!mcDataRef) return []
   return names.map(n => mcDataRef.blocksByName[n]?.id).filter(Boolean)
@@ -912,9 +923,9 @@ function isUnsafeDigTarget(block) {
   if (block.position.y < feetY - 1) return true
 
   // keep mining roughly near anchor elevation so bot can return to surface easier
-  const anchor = nearestAnchorForAuto() || nearestHumanPlayer()
-  if (anchor) {
-    const anchorY = Math.floor(anchor.position.y)
+  const anchorPos = nearestAnchorPosition() || safeEntityPosition(nearestHumanPlayer())
+  if (anchorPos) {
+    const anchorY = Math.floor(anchorPos.y)
     if (block.position.y < anchorY - 3) return true
   }
 
@@ -1002,9 +1013,8 @@ async function collectBlocks(blockName, amount = 1, opts = {}) {
     })
 
     if (!targetBlock) {
-      const anchor = nearestAnchorForAuto()
-      if (anchor) {
-        const a = anchor.position
+      const a = nearestAnchorPosition()
+      if (a) {
         bot.pathfinder.setGoal(new goals.GoalNear(a.x + 3, a.y, a.z + 3, 3))
       }
       autoSay(`No nearby ${blockNames[0]} found, scouting another spot.`, 7000)
@@ -1014,8 +1024,8 @@ async function collectBlocks(blockName, amount = 1, opts = {}) {
 
     if (isWaterHazardTarget(targetBlock)) {
       autoSay('Skipping waterlogged ore/stone to avoid drowning.', 7000)
-      const anchor = nearestAnchorForAuto()
-      if (anchor) bot.pathfinder.setGoal(new goals.GoalNear(anchor.position.x, anchor.position.y, anchor.position.z, 3))
+      const a = nearestAnchorPosition()
+      if (a) bot.pathfinder.setGoal(new goals.GoalNear(a.x, a.y, a.z, 3))
       await new Promise(resolve => setTimeout(resolve, 400))
       continue
     }
@@ -1030,9 +1040,9 @@ async function collectBlocks(blockName, amount = 1, opts = {}) {
       const unsafeKey = `${targetBlock.position.x},${targetBlock.position.y},${targetBlock.position.z}`
       unsafeTargets.set(unsafeKey, Date.now() + 12_000)
       autoSay('Avoiding unsafe dig below feet. Rerouting to safer block.', 12_000)
-      const anchor = nearestAnchorForAuto()
-      if (anchor) {
-        bot.pathfinder.setGoal(new goals.GoalNear(anchor.position.x, anchor.position.y, anchor.position.z, 3))
+      const a = nearestAnchorPosition()
+      if (a) {
+        bot.pathfinder.setGoal(new goals.GoalNear(a.x, a.y, a.z, 3))
       } else {
         bot.pathfinder.setGoal(new goals.GoalNear(targetBlock.position.x + 2, targetBlock.position.y + 1, targetBlock.position.z + 2, 2))
       }
@@ -1861,7 +1871,8 @@ async function autoMineTick(job) {
   await ensureWeaponBootstrap()
 
   const anchor = nearestAnchorForAuto()
-  if (anchor && bot.entity.position.distanceTo(anchor.position) > autoState.maxRadius) {
+  const anchorPos = safeEntityPosition(anchor)
+  if (anchor && anchorPos && bot.entity.position.distanceTo(anchorPos) > autoState.maxRadius) {
     bot.pathfinder.setGoal(new goals.GoalFollow(anchor, 3), true)
     return autoSay('Regrouping to stay in safe radius.')
   }
@@ -1873,13 +1884,13 @@ async function autoMineTick(job) {
   })
 
   if (!targetBlock) {
-    if (anchor) bot.pathfinder.setGoal(new goals.GoalFollow(anchor, 3), true)
+    if (anchor && anchorPos) bot.pathfinder.setGoal(new goals.GoalFollow(anchor, 3), true)
     return autoSay(`No nearby ${job.target} found. Following team.`)
   }
 
   if (isWaterHazardTarget(targetBlock)) {
     autoState.lastError = 'waterlogged-target'
-    if (anchor) bot.pathfinder.setGoal(new goals.GoalFollow(anchor, 3), true)
+    if (anchor && anchorPos) bot.pathfinder.setGoal(new goals.GoalFollow(anchor, 3), true)
     return autoSay('Waterlogged target skipped for safety.', 7000)
   }
 
@@ -2343,9 +2354,9 @@ async function safetyCheck() {
         bot.setControlState('jump', true)
         setTimeout(() => bot.setControlState('jump', false), 250)
 
-        const anchor = nearestAnchorForAuto()
-        if (anchor) {
-          bot.pathfinder.setGoal(new goals.GoalNear(anchor.position.x, anchor.position.y, anchor.position.z, 3))
+        const a = nearestAnchorPosition()
+        if (a) {
+          bot.pathfinder.setGoal(new goals.GoalNear(a.x, a.y, a.z, 3))
         } else {
           const p = bot.entity.position
           bot.pathfinder.setGoal(new goals.GoalNear(p.x + 2, p.y, p.z + 2, 1))
