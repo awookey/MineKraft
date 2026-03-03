@@ -10,6 +10,7 @@ const { Vec3 } = require('vec3')
 const pvp = require('mineflayer-pvp').plugin
 const autoEat = require('mineflayer-auto-eat').plugin
 const toolPlugin = require('mineflayer-tool').plugin
+const collectBlockPlugin = require('mineflayer-collectblock').plugin
 
 const dataDir = path.join(__dirname, 'data')
 const profilePath = path.join(dataDir, 'profiles.json')
@@ -1014,7 +1015,7 @@ function collectProfile(rawName) {
   return { blockNames: [name], countItems: [name] }
 }
 
-async function collectBlocks(blockName, amount = 1, opts = {}) {
+async function collectBlocksLegacy(blockName, amount = 1, opts = {}) {
   const targetAmount = parseAmount(amount, 1, 512)
   const startedAt = Date.now()
   const timeoutMs = opts.timeoutMs || Math.min(180_000, Math.max(45_000, targetAmount * 3500))
@@ -2574,9 +2575,10 @@ function createBot() {
 
   bot.loadPlugin(pathfinder)
   bot.loadPlugin(pvp)
-  // --- NEW CODE START: FIX 2 mineflayer-tool plugin ---
+  // --- NEW CODE START: collectblock/tool plugin wiring ---
   bot.loadPlugin(toolPlugin)
-  // --- NEW CODE END: FIX 2 mineflayer-tool plugin ---
+  bot.loadPlugin(collectBlockPlugin)
+  // --- NEW CODE END: collectblock/tool plugin wiring ---
 
   // --- NEW CODE START: FIX 3 noPath unblock + reroute ---
   bot.on('path_update', (results) => {
