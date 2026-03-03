@@ -1028,8 +1028,8 @@ async function collectBlocks(blockName, amount = 1, opts = {}) {
     }
 
     const current = countItems.reduce((sum, n) => sum + itemCount(n), 0)
-    if (current - before >= targetAmount) {
-      return { ok: true, collected: current - before, target: targetAmount }
+    if (current >= targetAmount) {
+      return { ok: true, collected: Math.max(0, current - before), target: targetAmount }
     }
 
     const targetBlock = bot.findBlock({
@@ -1551,17 +1551,22 @@ function fallbackPlannerTasks(job) {
   if (target === 'hut') {
     if (stoneStyle) {
       return [
-        { order: 1, task: 'gather cobblestone', item: 'cobblestone', amount: 36, method: 'collectBlocks' }
+        { order: 1, task: 'gather cobblestone', item: 'cobblestone', amount: 32, method: 'collectBlocks' }
       ]
     }
 
-    const tasks = [
+    if (woodStyle) {
+      return [
+        { order: 1, task: 'gather oak_log', item: 'oak_log', amount: 8, method: 'collectBlocks' },
+        { order: 2, task: 'craft oak_planks', item: 'oak_planks', amount: 32, method: 'craftItem' }
+      ]
+    }
+
+    return [
       { order: 1, task: 'gather oak_log', item: 'oak_log', amount: 8, method: 'collectBlocks' },
-      { order: 2, task: 'craft oak_planks', item: 'oak_planks', amount: 8, method: 'craftItem' },
+      { order: 2, task: 'craft oak_planks', item: 'oak_planks', amount: 30, method: 'craftItem' },
       { order: 3, task: 'gather cobblestone', item: 'cobblestone', amount: 2, method: 'collectBlocks' }
     ]
-    if (woodStyle) tasks.pop()
-    return tasks
   }
 
   if (target === 'house') {
@@ -1571,22 +1576,41 @@ function fallbackPlannerTasks(job) {
       ]
     }
 
-    const tasks = [
-      { order: 1, task: 'gather oak_log', item: 'oak_log', amount: 24, method: 'collectBlocks' },
-      { order: 2, task: 'craft oak_planks', item: 'oak_planks', amount: 24, method: 'craftItem' },
-      { order: 3, task: 'gather cobblestone', item: 'cobblestone', amount: 32, method: 'collectBlocks' }
+    if (woodStyle) {
+      return [
+        { order: 1, task: 'gather oak_log', item: 'oak_log', amount: 24, method: 'collectBlocks' },
+        { order: 2, task: 'craft oak_planks', item: 'oak_planks', amount: 96, method: 'craftItem' }
+      ]
+    }
+
+    return [
+      { order: 1, task: 'gather oak_log', item: 'oak_log', amount: 18, method: 'collectBlocks' },
+      { order: 2, task: 'craft oak_planks', item: 'oak_planks', amount: 71, method: 'craftItem' },
+      { order: 3, task: 'gather cobblestone', item: 'cobblestone', amount: 25, method: 'collectBlocks' }
     ]
-    if (woodStyle) tasks.pop()
-    return tasks
   }
 
   if (target === 'tower') {
+    if (woodStyle) {
+      return [
+        { order: 1, task: 'gather oak_log', item: 'oak_log', amount: 17, method: 'collectBlocks' },
+        { order: 2, task: 'craft oak_planks', item: 'oak_planks', amount: 65, method: 'craftItem' }
+      ]
+    }
+
     return [
-      { order: 1, task: 'gather cobblestone', item: 'cobblestone', amount: 72, method: 'collectBlocks' }
+      { order: 1, task: 'gather cobblestone', item: 'cobblestone', amount: 65, method: 'collectBlocks' }
     ]
   }
 
   if (target === 'wall') {
+    if (woodStyle) {
+      return [
+        { order: 1, task: 'gather oak_log', item: 'oak_log', amount: 9, method: 'collectBlocks' },
+        { order: 2, task: 'craft oak_planks', item: 'oak_planks', amount: 36, method: 'craftItem' }
+      ]
+    }
+
     return [
       { order: 1, task: 'gather cobblestone', item: 'cobblestone', amount: 36, method: 'collectBlocks' }
     ]
