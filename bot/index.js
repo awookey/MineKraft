@@ -2691,7 +2691,7 @@ function createBot() {
     flow: cfg.authFlow,
     authTitle: Titles.MinecraftJava,
     deviceType: 'Win32',
-    version: false,
+    version: '1.21.4',
     hideErrors: false,
     checkTimeoutInterval: 30_000,
     profilesFolder: path.join(__dirname, 'auth-cache')
@@ -2728,6 +2728,8 @@ function createBot() {
     // --- NEW CODE END: FIX 1 plugin auto-eat ---
     const mcData = require('minecraft-data')(bot.version)
     mcDataRef = mcData
+    console.log('[silasbot] version:', bot.version)
+    console.log('[silasbot] stone id:', mcDataRef.blocksByName.stone?.id)
     const movement = new Movements(bot, mcData)
     movement.canSwim = false
     movement.allow1by1towers = true
