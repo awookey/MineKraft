@@ -1,79 +1,83 @@
-# MineKraft (SilasCraft)
+# SilasCraft: Minecraft + Mineflayer Quest Bot
 
-Family-friendly Minecraft server + Mineflayer bot with autonomous gather/craft/build loops.
+Family-friendly Minecraft server with a personality bot that can switch to full mayhem PvP mode.
 
-## Included
+## What is included
 
 - Paper Minecraft server (Docker)
-- Mineflayer bot (`SilasBot`) with quest + auto-job logic
-- Daily backups container
-- Helper scripts for up/down/logs/backup/restore
-
-## Repository scaffold
-
-- `docker-compose.yml` — stack definition
-- `bot/` — Mineflayer bot source
-  - `index.js`
-  - `Dockerfile`
-  - `package.json`
-  - `data/` (runtime JSON, gitignored)
-  - `auth-cache/` (runtime OAuth cache, gitignored)
-- `scripts/` — operational scripts
-- `server-data/` (runtime world/config, gitignored)
-- `backups/` (runtime backups, gitignored)
+- Daily world backups with retention
+- Mineflayer bot with:
+  - Follow / guard / come / stay commands
+  - Quest generator
+  - Family vs Mayhem mode
+  - PvP toggle (in mayhem mode)
+  - Per-player style memory (`bot/data/profiles.json`)
+- One-command up/down/logs scripts
 
 ## Quick start
 
 ```bash
+cd /home/silas/.openclaw/workspace/projects/minecraft-silas
 cp .env.example .env
-# edit .env values (whitelist/admin/rcon/bot account)
+# Edit .env for ops/whitelist/password/bot username
 ./scripts/up.sh
 ```
 
-Then tail bot logs for first auth:
+Join from LAN using the host IP and port `25565`.
 
-```bash
-./scripts/logs.sh silasbot
-```
+## Bot auth (secure)
 
-Follow device-code login prompt for Microsoft auth.
+Do **not** share Microsoft passwords.
 
-## Core in-game commands
+Use device-code auth on first bot run:
 
-All commands start with `!silas`.
+1. `./scripts/logs.sh silasbot`
+2. Copy the Microsoft URL + one-time code shown in logs
+3. Sign in on your own device as the bot account
+4. Refresh token is saved under `bot/auth-cache`
 
-### Movement / control
-- `!silas come`
+## In-game commands
+
+Commands start with `!silas`:
+
+- `!silas help`
 - `!silas follow <name>`
+- `!silas come`
 - `!silas stay`
 - `!silas guard <name>`
-
-### Manual tasks
+- `!silas quest start [mining|build|combat|scavenger]|status|done|abandon|types`
 - `!silas gather <iron|coal|stone|wood|wool|food> [amount]`
-- `!silas craft <item> [amount]`
-- `!silas build <hut|house|tower|wall> [wood|stone]`
+- `!silas craft <item> [amount]` (e.g. iron_sword, iron_pickaxe, shield, torch)
+- `!silas build <hut|house|tower|wall>`
 - `!silas task <plain text>`
-
-### Auto mode
-- `!silas auto on|off|status|debug|cancel`
-- `!silas auto mine <target> <amount>`
-- `!silas auto gather <target> <amount>`
+- `!silas inventory`
+- `!silas deposit`
+- `!silas chest` (prepare/place shared chest)
+- `!silas stash` (store shared loot in chest)
+- `!silas auto on|off|status|cancel`
+- `!silas auto mine <iron|coal|stone|wood|wool> <amount>`
 - `!silas auto craft <item> <amount>`
-- `!silas auto build <hut|house|tower|wall> [wood|stone]`
+- `!silas auto build <hut|house|tower|wall>`
+- `!silas profile`
+- `!silas class <builder|scout|tank|alchemist>`
+- `!silas checkin`
+- `!silas party create <name>|join <name>|leave|status`
+- `!silas mode family|mayhem` (admin users only)
+- `!silas pvp on|off`
+- `!silas event now` (admin users only)
+- `!silas style <build style>`
+- `!silas vibe`
 
-### Testing helpers
-- `!silas daytime on|off|status`
+## Operational scripts
 
-## Ops scripts
-
-- Start stack: `./scripts/up.sh`
-- Stop stack: `./scripts/down.sh`
+- Start: `./scripts/up.sh`
+- Stop: `./scripts/down.sh`
 - Logs: `./scripts/logs.sh [minecraft|silasbot|mc-backup]`
 - Manual backup: `./scripts/backup-now.sh`
-- Restore backup: `./scripts/restore.sh <backup-file>`
+- Restore: `./scripts/restore.sh backups/manual/world-....tar.gz`
 
 ## Notes
 
-- `.env` is intentionally excluded from git.
-- Runtime world data and backups are excluded from git.
-- Bot auth cache is excluded from git.
+- Keep `ONLINE_MODE=TRUE` for authenticated accounts.
+- Keep whitelist enabled for private family server use.
+- For internet exposure, put behind firewall rules and set up rate limiting.

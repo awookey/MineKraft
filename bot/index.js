@@ -1290,8 +1290,15 @@ async function placeStructure(type, opts = {}) {
   }
 
   if (done.size !== ordered.length) {
-    const failed = ordered
+    const unresolved = ordered
       .filter(step => !done.has(`${step.pos.x},${step.pos.y},${step.pos.z},${step.item}`))
+
+    if (!unresolved.length) {
+      say(`Structure ${buildType} (${materialStyle}) complete. Placed ${placed} blocks.`)
+      return { ok: true, type: buildType, material: materialStyle, placed, skipped, total: ordered.length }
+    }
+
+    const failed = unresolved
       .slice(0, 8)
       .map(step => {
         const key = `${step.pos.x},${step.pos.y},${step.pos.z},${step.item}`
@@ -1526,6 +1533,14 @@ async function planTask(job, botRef) {
       const normalized = normalizePlannerStep(step)
       const key = normalized.task || `${normalized.method}:${normalized.item}`
       autoState.currentStep = `plan:${key}`
+
+      if (
+        normalized.item &&
+        ['collectBlocks', 'craftItem', 'smeltItem'].includes(normalized.method) &&
+        itemCount(normalized.item) >= normalized.amount
+      ) {
+        continue
+      }
 
       const before = normalized.item ? itemCount(normalized.item) : 0
       const execState = await debugRepairLoop(normalized, job, 3)
