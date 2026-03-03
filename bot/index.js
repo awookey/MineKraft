@@ -48,6 +48,7 @@ let lastWeaponBootstrapAt = 0
 let lastCombatRetreatAt = 0
 let collectScoutIndex = 0
 let combatRearmAt = 0
+let lastMineSidestepAt = 0
 
 const autoState = {
   enabled: false,
@@ -2130,6 +2131,37 @@ async function autoMineTick(job) {
   })
 
   if (!targetBlock) {
+    // --- NEW CODE START: sidestep when standing on mineable support block ---
+    const feet = bot.entity.position.floored()
+    const support = bot.blockAt(feet.offset(0, -1, 0))
+    if (support && blockIds.includes(support.type) && Date.now() - lastMineSidestepAt > 2500) {
+      lastMineSidestepAt = Date.now()
+      const offsets = [
+        new Vec3(1, 0, 0),
+        new Vec3(-1, 0, 0),
+        new Vec3(0, 0, 1),
+        new Vec3(0, 0, -1)
+      ]
+      const moveTo = offsets
+        .map(v => feet.plus(v))
+        .find(pos => {
+          const foot = bot.blockAt(pos)
+          const head = bot.blockAt(pos.offset(0, 1, 0))
+          const floor = bot.blockAt(pos.offset(0, -1, 0))
+          const footAir = isAirBlock(foot) || isReplaceableBlock(foot)
+          const headAir = isAirBlock(head) || isReplaceableBlock(head)
+          const floorSafe = floor && !isAirBlock(floor) && !String(floor.name || '').includes('water') && !String(floor.name || '').includes('lava')
+          return footAir && headAir && floorSafe
+        })
+
+      if (moveTo) {
+        bot.pathfinder.setGoal(new goals.GoalNear(moveTo.x, moveTo.y, moveTo.z, 0))
+        autoState.lastError = 'standing-on-target-reposition'
+        return autoSay('Repositioning off target block to mine safely.', 5000)
+      }
+    }
+    // --- NEW CODE END: sidestep when standing on mineable support block ---
+
     // --- NEW CODE START: collectblock fallback when direct scan misses target ---
     const collectResult = await collectBlocks(job.target, job.amount, { timeoutMs: 12_000 })
     if (collectResult?.ok || itemCount(job.item) >= job.amount) {
