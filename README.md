@@ -1,72 +1,82 @@
-# SilasCraft: Minecraft + Mineflayer Quest Bot
+# MineKraft (SilasCraft)
 
-Family-friendly Minecraft server with a personality bot that can switch to full mayhem PvP mode.
+Family-friendly Minecraft server + Mineflayer bot with autonomous gather/craft/build loops, LLM planning, and persistent skill memory.
 
-## What is included
+## What this is
 
 - Paper Minecraft server (Docker)
-- Daily world backups with retention
-- Mineflayer bot with:
-  - Follow / guard / come / stay commands
-  - Quest generator
-  - Family vs Mayhem mode
-  - PvP toggle (in mayhem mode)
-  - Per-player style memory (`bot/data/profiles.json`)
-- One-command up/down/logs scripts
+- Mineflayer bot (`SilasMcClaw`) with:
+  - normal companion commands (follow/come/stay/guard)
+  - quest + profile system
+  - **LLM/Codex planning** for prerequisite task generation
+  - **skill persistence** (`bot/data/skills.json`) so known-good plans are reused
+  - **auto execution** for mine/craft/build with safety + repair loops
+- Daily backup container with retention
+- One-command ops scripts for start/stop/logs/backup/restore
+
+## Architecture highlights
+
+- Planner path:
+  1) load cached skill plan by key
+  2) fallback to LLM planner when needed
+  3) execute prerequisite tasks in order
+  4) record successful plans back to skills store
+- Build path:
+  - template-driven block placement
+  - multi-pass placement retries
+  - relocation retry when first build site fails
+- Safety path:
+  - anti-water and low-breath checks
+  - stuck watchdog with guarded reroute
+  - 1x1 shaft escape routine
+  - combat retreat/re-arm tuning
 
 ## Quick start
 
 ```bash
-cd /home/silas/.openclaw/workspace/projects/minecraft-silas
+cd /home/silas/.openclaw/workspace/MineKraft
 cp .env.example .env
-# Edit .env for ops/whitelist/password/bot username
+# Edit .env for whitelist/admin/rcon/bot account details
 ./scripts/up.sh
 ```
 
-Join from LAN using the host IP and port `25565`.
+Join from LAN on host port `25565`.
 
 ## Bot auth (secure)
 
-Do **not** share Microsoft passwords.
-
-Use device-code auth on first bot run:
+Use Microsoft device-code auth on first run:
 
 1. `./scripts/logs.sh silasbot`
-2. Copy the Microsoft URL + one-time code shown in logs
-3. Sign in on your own device as the bot account
-4. Refresh token is saved under `bot/auth-cache`
+2. Copy the Microsoft URL + one-time code from logs
+3. Sign in as the bot account
+4. Refresh token is stored under `bot/auth-cache`
 
-## In-game commands
+## In-game command surface
 
-Commands start with `!silas`:
+All commands start with `!silas`.
 
+### Core control
 - `!silas help`
 - `!silas follow <name>`
 - `!silas come`
 - `!silas stay`
 - `!silas guard <name>`
-- `!silas quest start [mining|build|combat|scavenger]|status|done|abandon|types`
+
+### Manual tasks
 - `!silas gather <iron|coal|stone|wood|wool|food> [amount]`
-- `!silas craft <item> [amount]` (e.g. iron_sword, iron_pickaxe, shield, torch)
-- `!silas build <hut|house|tower|wall>`
+- `!silas craft <item> [amount]`
+- `!silas build <hut|house|tower|wall> [wood|stone]`
 - `!silas task <plain text>`
-- `!silas inventory`
-- `!silas deposit`
-- `!silas chest` (prepare/place shared chest)
-- `!silas stash` (store shared loot in chest)
-- `!silas auto on|off|status|cancel`
-- `!silas auto mine <iron|coal|stone|wood|wool> <amount>`
+
+### Auto mode
+- `!silas auto on|off|status|debug|cancel`
+- `!silas auto mine <target> <amount>`
+- `!silas auto gather <target> <amount>`
 - `!silas auto craft <item> <amount>`
-- `!silas auto build <hut|house|tower|wall>`
-- `!silas profile`
-- `!silas class <builder|scout|tank|alchemist>`
-- `!silas checkin`
-- `!silas party create <name>|join <name>|leave|status`
-- `!silas mode family|mayhem` (admin users only)
-- `!silas pvp on|off`
-- `!silas event now` (admin users only)
-- `!silas style <build style>`
-- `!silas vibe`
+- `!silas auto build <hut|house|tower|wall> [wood|stone]`
+
+### Test helper
+- `!silas daytime on|off|status`
 
 ## Operational scripts
 
@@ -74,10 +84,23 @@ Commands start with `!silas`:
 - Stop: `./scripts/down.sh`
 - Logs: `./scripts/logs.sh [minecraft|silasbot|mc-backup]`
 - Manual backup: `./scripts/backup-now.sh`
-- Restore: `./scripts/restore.sh backups/manual/world-....tar.gz`
+- Restore: `./scripts/restore.sh backups/<file>.tar.gz`
+
+## Repo layout
+
+- `docker-compose.yml`
+- `bot/` (Mineflayer source)
+  - `index.js`
+  - `Dockerfile`
+  - `package.json`
+  - `data/` (runtime JSON)
+  - `auth-cache/` (runtime auth cache)
+- `scripts/`
+- `server-data/` (runtime world/config)
+- `backups/` (runtime backups)
 
 ## Notes
 
 - Keep `ONLINE_MODE=TRUE` for authenticated accounts.
-- Keep whitelist enabled for private family server use.
-- For internet exposure, put behind firewall rules and set up rate limiting.
+- Keep whitelist enabled for private/family play.
+- `.env`, runtime world data, backups, and auth cache are intentionally excluded from git.
