@@ -910,6 +910,11 @@ async function equipBestToolForBlock(block) {
 }
 
 function isUnsafeDigTarget(block) {
+  // --- NEW CODE START: bug 2 surface stone exception ---
+  const isSurfaceStone = ['stone', 'cobblestone', 'deepslate', 'cobbled_deepslate'].includes(block?.name)
+  if (isSurfaceStone) return false
+  // --- NEW CODE END: bug 2 surface stone exception ---
+
   if (!bot?.entity || !block?.position) return false
 
   const feet = bot.entity.position
@@ -1360,10 +1365,23 @@ async function placeStructure(type, opts = {}) {
 
   for (let pass = 1; pass <= 3; pass++) {
     let progress = false
+    // --- NEW CODE START: bug 5 layer-by-layer traversal assist ---
+    let currentY = null
+    // --- NEW CODE END: bug 5 layer-by-layer traversal assist ---
 
     for (const step of uniqueOrdered) {
       const key = `${step.pos.x},${step.pos.y},${step.pos.z},${step.item}`
       if (done.has(key)) continue
+
+      // --- NEW CODE START: bug 5 layer-by-layer traversal assist ---
+      if (currentY !== null && step.pos.y !== currentY) {
+        bot.pathfinder.setGoal(new goals.GoalNear(
+          origin.x + 1, currentY + 1, origin.z + 1, 1
+        ))
+        await new Promise(resolve => setTimeout(resolve, 800))
+      }
+      currentY = step.pos.y
+      // --- NEW CODE END: bug 5 layer-by-layer traversal assist ---
 
       const result = await placeOneBlock(step.pos, step.item)
       if (result.ok) {
@@ -1396,8 +1414,13 @@ async function placeStructure(type, opts = {}) {
     if (!progress && pass >= 2) break
   }
 
-  if (done.size !== uniqueOrdered.length) {
-    const unresolved = uniqueOrdered.filter(step => !done.has(`${step.pos.x},${step.pos.y},${step.pos.z},${step.item}`))
+  // --- NEW CODE START: bug 4 completion check based on actual world state ---
+  const needed = uniqueOrdered.filter(s => {
+    const at = bot.blockAt(s.pos)
+    return !at || at.name !== s.item
+  })
+  if (needed.length > 0 && done.size < needed.length) {
+    const unresolved = needed
     const failed = unresolved
       .slice(0, 8)
       .map(step => {
@@ -1408,6 +1431,7 @@ async function placeStructure(type, opts = {}) {
     say(`Build ${buildType} partial: placed ${placed}, failed ${failed.length}/${unresolved.length}.`)
     return { ok: false, reason: 'placement-failed', placed, skipped, failed, failedTotal: unresolved.length }
   }
+  // --- NEW CODE END: bug 4 completion check based on actual world state ---
 
   say(`Structure ${buildType} (${materialStyle}) complete. Placed ${placed} blocks.`)
   return { ok: true, type: buildType, material: materialStyle, placed, skipped, total: uniqueOrdered.length }
@@ -1879,8 +1903,17 @@ async function autoMineTick(job) {
   }
 
   const blockIds = blockIdsFromNames(job.blocks)
+  // --- NEW CODE START: bug 3 mining Y-floor guard ---
+  const botY = Math.floor(bot.entity.position.y)
+  // --- NEW CODE END: bug 3 mining Y-floor guard ---
   const targetBlock = bot.findBlock({
-    matching: b => blockIds.includes(b.type),
+    matching: b => {
+      if (!b || !b.position) return false
+      // --- NEW CODE START: bug 3 mining Y-floor guard ---
+      if (b.position.y < botY - 4) return false
+      // --- NEW CODE END: bug 3 mining Y-floor guard ---
+      return blockIds.includes(b.type)
+    },
     maxDistance: 24
   })
 
@@ -2406,7 +2439,7 @@ function createBot() {
     mcDataRef = mcData
     const movement = new Movements(bot, mcData)
     movement.canSwim = false
-    movement.allow1by1towers = false
+    movement.allow1by1towers = true
     if (mcData.blocksByName.water) movement.blocksToAvoid.add(mcData.blocksByName.water.id)
     if (mcData.blocksByName.lava) movement.blocksToAvoid.add(mcData.blocksByName.lava.id)
     bot.pathfinder.setMovements(movement)
