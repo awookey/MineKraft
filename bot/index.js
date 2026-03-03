@@ -2298,9 +2298,11 @@ function nearbyHostiles(maxDistance = 10) {
 async function retreatAndRecover(reason) {
   lastCombatRetreatAt = Date.now()
   const hardReason = String(reason || '')
+  // --- NEW CODE START: FIX 2 faster re-arm window ---
   if (hardReason.includes('hostile') || hardReason.includes('safety') || hardReason.includes('low health')) {
-    combatRearmAt = Math.max(combatRearmAt, Date.now() + 12_000)
+    combatRearmAt = Math.max(combatRearmAt, Date.now() + 6_000)
   }
+  // --- NEW CODE END: FIX 2 faster re-arm window ---
 
   bot.pvp.stop()
 
@@ -2350,36 +2352,90 @@ async function survivalTick() {
 
     const hostileList = nearbyHostiles(8)
     const hostile = hostileList[0] || null
+    // --- NEW CODE START: FIX 2 smarter combat/kiting/retreat logic ---
     if (hostile) {
       const now = Date.now()
       const swarmPressure = hostileList.length >= 3
-      const creeperPressure = hostileList.some(e => e.name === 'creeper' && bot.entity.position.distanceTo(e.position) < 4.5)
-      const retreatCooldown = now - lastCombatRetreatAt < 10_000
+      const creeperClose = hostileList.some(e => e.name === 'creeper' && bot.entity.position.distanceTo(e.position) < 5)
+      const rangedMob = ['skeleton', 'stray', 'phantom', 'witch', 'pillager'].includes(hostile.name)
+      const healthCritical = bot.health <= 8
+      const healthLow = bot.health <= 13
       const rearmWindow = now < combatRearmAt
 
-      if (swarmPressure || creeperPressure || bot.health <= 13 || retreatCooldown || rearmWindow) {
-        await retreatAndRecover(swarmPressure ? 'hostile swarm' : `close ${hostile.name}`)
-      } else if (hasAnySword()) {
+      // Always retreat from these situations
+      if (healthCritical || creeperClose || swarmPressure || rearmWindow) {
+        await retreatAndRecover(
+          healthCritical ? 'critical health'
+            : creeperClose ? 'creeper close'
+              : swarmPressure ? 'swarm'
+                : 'rearm'
+        )
+        return
+      }
+
+      // Kite ranged mobs — back up while attacking
+      if (rangedMob && hasAnySword()) {
+        const awayVec = bot.entity.position.minus(hostile.position).normalize()
+        const kitePos = bot.entity.position.plus(awayVec.scaled(4))
+        bot.pathfinder.setGoal(
+          new goals.GoalNear(kitePos.x, kitePos.y, kitePos.z, 2),
+          true
+        )
         if (!bot.pvp.target) {
           bot.pvp.attack(hostile)
-          autoSay(`Defending against ${hostile.name}.`, 6000)
+          autoSay(`Kiting ${hostile.name}.`, 5000)
         }
-      } else {
-        await retreatAndRecover(`hostile:${hostile.name}`)
+        return
       }
+
+      // Healthy enough to fight single melee mob
+      if (hasAnySword() && !healthLow) {
+        if (!bot.pvp.target) {
+          bot.pvp.attack(hostile)
+          autoSay(`Defending against ${hostile.name}.`, 5000)
+        }
+        return
+      }
+
+      // Low health but not critical — back off and eat
+      if (healthLow) {
+        const food = pickFoodItem()
+        if (food) {
+          await bot.equip(food, 'hand').catch(() => {})
+          await bot.consume().catch(() => {})
+        }
+        await retreatAndRecover('low health combat')
+        return
+      }
+
+      // No sword — always run
+      await retreatAndRecover(`no weapon: ${hostile.name}`)
     } else if (bot.pvp.target && !guardTarget) {
       bot.pvp.stop()
       if (bot.health > 15) combatRearmAt = 0
     }
+    // --- NEW CODE END: FIX 2 smarter combat/kiting/retreat logic ---
 
-    if (bot.food < 14 && Date.now() - lastFoodTryAt > 12000) {
+    // --- NEW CODE START: FIX 1 two-tier emergency/normal eating ---
+    // Emergency eat: health dropping fast, no cooldown
+    if (bot.health <= 14) {
       const food = pickFoodItem()
       if (food) {
         await bot.equip(food, 'hand').catch(() => {})
         await bot.consume().catch(() => {})
+        lastFoodTryAt = Date.now()
       }
-      lastFoodTryAt = Date.now()
     }
+    // Normal eat: hunger low, 8s cooldown
+    else if (bot.food < 16 && Date.now() - lastFoodTryAt > 8000) {
+      const food = pickFoodItem()
+      if (food) {
+        await bot.equip(food, 'hand').catch(() => {})
+        await bot.consume().catch(() => {})
+        lastFoodTryAt = Date.now()
+      }
+    }
+    // --- NEW CODE END: FIX 1 two-tier emergency/normal eating ---
   } finally {
     survivalBusy = false
   }
@@ -2398,10 +2454,17 @@ async function safetyCheck() {
   })
   while (recentPositions.length > 5) recentPositions.shift()
 
+  // --- NEW CODE START: FIX 1 emergency eat in safetyCheck ---
   if (bot.health <= 10) {
+    const food = pickFoodItem()
+    if (food) {
+      await bot.equip(food, 'hand').catch(() => {})
+      await bot.consume().catch(() => {})
+    }
     await retreatAndRecover('safety: low health')
     return
   }
+  // --- NEW CODE END: FIX 1 emergency eat in safetyCheck ---
 
   if (bot.entity.isInLava || bot.entity.isInWater) {
     await retreatAndRecover('safety: bad terrain')
