@@ -1004,6 +1004,7 @@ async function collectBlocks(blockName, amount = 1, opts = {}) {
 
     const targetBlock = bot.findBlock({
       matching: b => {
+        if (!b || !b.position) return false
         if (!matchingIds.includes(b.type)) return false
         const key = `${b.position.x},${b.position.y},${b.position.z}`
         const avoidUntil = unsafeTargets.get(key) || 0
