@@ -32,6 +32,8 @@ const cfg = {
   adminUsers: (process.env.SILAS_ADMIN_USERS || '').split(',').map(s => s.trim()).filter(Boolean)
 }
 
+const useCollectBlockPlugin = String(process.env.USE_COLLECTBLOCK_PLUGIN || 'true').toLowerCase() !== 'false'
+
 let bot
 let activeMode = cfg.mode
 let followTarget = null
@@ -1129,6 +1131,102 @@ async function collectBlocksLegacy(blockName, amount = 1, opts = {}) {
   return { ok: false, reason: 'timeout', collected: Math.max(0, after - before), target: targetAmount }
 }
 
+// --- NEW CODE START: collectblock migration wrapper ---
+async function collectBlocksWithPlugin(blockName, amount = 1, opts = {}) {
+  if (!bot?.collectBlock?.collect) {
+    return { ok: false, reason: 'collectblock-unavailable', collected: 0, target: parseAmount(amount, 1, 512) }
+  }
+
+  const targetAmount = parseAmount(amount, 1, 512)
+  const timeoutMs = opts.timeoutMs || Math.min(120_000, Math.max(35_000, targetAmount * 2200))
+  const startedAt = Date.now()
+  const profile = collectProfile(Array.isArray(blockName) ? blockName[0] : blockName)
+  const blockNames = profile.blockNames
+  const countItems = profile.countItems
+  const matchingIds = blockIdsFromNames(blockNames)
+  const unsafeTargets = new Map()
+
+  if (!matchingIds.length) {
+    return { ok: false, reason: `unknown-block:${blockName}`, collected: 0, target: targetAmount }
+  }
+
+  const needsPickaxe = blockNames.some(n => /stone|ore|deepslate|cobble/.test(n))
+  if (needsPickaxe && !hasAnyPickaxe()) {
+    await ensureMiningBootstrap({ target: 'stone' })
+  }
+
+  const before = countItems.reduce((sum, n) => sum + itemCount(n), 0)
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const current = countItems.reduce((sum, n) => sum + itemCount(n), 0)
+    if (current >= targetAmount) {
+      return { ok: true, collected: Math.max(0, current - before), target: targetAmount }
+    }
+
+    const targetBlock = bot.findBlock({
+      matching: b => {
+        if (!b || !b.position) return false
+        if (!matchingIds.includes(b.type)) return false
+        const key = `${b.position.x},${b.position.y},${b.position.z}`
+        const avoidUntil = unsafeTargets.get(key) || 0
+        return avoidUntil <= Date.now()
+      },
+      maxDistance: 48
+    })
+
+    if (!targetBlock) {
+      const scoutOffsets = [
+        [4, 4], [-4, 4], [4, -4], [-4, -4],
+        [10, 0], [-10, 0], [0, 10], [0, -10],
+        [18, 0], [-18, 0], [0, 18], [0, -18]
+      ]
+      const [ox, oz] = scoutOffsets[collectScoutIndex % scoutOffsets.length]
+      collectScoutIndex += 1
+      const a = nearestAnchorPosition()
+      if (a) {
+        bot.pathfinder.setGoal(new goals.GoalNear(a.x + ox, a.y, a.z + oz, 4))
+      }
+      autoSay(`No nearby ${blockNames[0]} found, scouting wider.`, 7000)
+      await new Promise(resolve => setTimeout(resolve, 500))
+      continue
+    }
+
+    if (isWaterHazardTarget(targetBlock)) {
+      const key = `${targetBlock.position.x},${targetBlock.position.y},${targetBlock.position.z}`
+      unsafeTargets.set(key, Date.now() + 10_000)
+      await new Promise(resolve => setTimeout(resolve, 250))
+      continue
+    }
+
+    try {
+      await bot.collectBlock.collect(targetBlock, { ignoreNoPath: true })
+    } catch (_) {
+      const key = `${targetBlock.position.x},${targetBlock.position.y},${targetBlock.position.z}`
+      unsafeTargets.set(key, Date.now() + 8000)
+      await new Promise(resolve => setTimeout(resolve, 250))
+    }
+  }
+
+  const after = countItems.reduce((sum, n) => sum + itemCount(n), 0)
+  return { ok: false, reason: 'timeout', collected: Math.max(0, after - before), target: targetAmount }
+}
+
+async function collectBlocks(blockName, amount = 1, opts = {}) {
+  const requested = String(Array.isArray(blockName) ? blockName[0] : blockName || '').toLowerCase().trim()
+  const pluginTargets = new Set([
+    'stone', 'cobblestone', 'deepslate', 'cobbled_deepslate', 'wood', 'log', 'oak_log',
+    'birch_log', 'spruce_log', 'jungle_log', 'acacia_log', 'dark_oak_log', 'mangrove_log', 'cherry_log'
+  ])
+
+  if (useCollectBlockPlugin && pluginTargets.has(requested)) {
+    const viaPlugin = await collectBlocksWithPlugin(blockName, amount, opts)
+    if (viaPlugin?.ok) return viaPlugin
+  }
+
+  return collectBlocksLegacy(blockName, amount, opts)
+}
+// --- NEW CODE END: collectblock migration wrapper ---
+
 async function smeltItem(itemName, amount = 1) {
   const targetAmount = parseAmount(amount, 1, 256)
   const furnace = bot.findBlock({ matching: blockIdsFromNames(['furnace']), maxDistance: 8 })
@@ -2022,6 +2120,17 @@ async function autoMineTick(job) {
   })
 
   if (!targetBlock) {
+    // --- NEW CODE START: collectblock fallback when direct scan misses target ---
+    const collectResult = await collectBlocks(job.target, job.amount, { timeoutMs: 12_000 })
+    if (collectResult?.ok || itemCount(job.item) >= job.amount) {
+      awardXp(job.owner, 120, `auto-mine:${job.target}`)
+      return stopAutoJob(`Auto mine complete: ${job.target} x${job.amount}. Kept materials in inventory for next job.`)
+    }
+    if ((collectResult?.collected || 0) > 0) {
+      autoState.lastError = null
+      return
+    }
+    // --- NEW CODE END: collectblock fallback when direct scan misses target ---
     if (anchor && anchorPos) bot.pathfinder.setGoal(new goals.GoalFollow(anchor, 3), true)
     return autoSay(`No nearby ${job.target} found. Following team.`)
   }
