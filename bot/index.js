@@ -40,6 +40,7 @@ let spawnPosition = null
 const recentPositions = []
 let lastStuckNudgeAt = 0
 let lastWeaponBootstrapAt = 0
+let lastCombatRetreatAt = 0
 
 const autoState = {
   enabled: false,
@@ -726,6 +727,7 @@ function startAutoBuild(owner, planRaw, materialRaw) {
     goal: `build a ${material} ${target}`,
     planPrepared: false,
     buildAttempted: false,
+    buildRetryUsed: false,
     startedAt: Date.now()
   }
 
@@ -1235,9 +1237,9 @@ async function placeStructure(type, opts = {}) {
   if (missing.length) return { ok: false, reason: 'missing-materials', missing }
 
   const base = bot.entity.position.floored()
-  const candidateOffsets = [
-    [3, 0], [6, 0], [-3, 0], [0, 3], [0, -3], [6, 3], [6, -3], [-6, 3], [-6, -3]
-  ]
+  const candidateOffsets = opts.relocate
+    ? [[9, 0], [12, 0], [-9, 0], [0, 9], [0, -9], [12, 6], [12, -6], [-12, 6], [-12, -6]]
+    : [[3, 0], [6, 0], [-3, 0], [0, 3], [0, -3], [6, 3], [6, -3], [-6, 3], [-6, -3]]
 
   const scored = candidateOffsets.map(([ox, oz]) => {
     const origin = base.offset(ox, 0, oz)
@@ -1866,7 +1868,13 @@ async function autoBuildTick(job) {
   if (job.buildAttempted) return
 
   job.buildAttempted = true
-  const placed = await placeStructure(job.target, { material: job.material })
+  let placed = await placeStructure(job.target, { material: job.material })
+
+  if (!placed?.ok && placed?.reason === 'placement-failed' && !job.buildRetryUsed) {
+    job.buildRetryUsed = true
+    autoSay('Relocating build site and retrying structure placement.', 3000)
+    placed = await placeStructure(job.target, { material: job.material, relocate: true })
+  }
 
   if (!placed?.ok) {
     const reason = placed?.reason || 'unknown'
@@ -2092,6 +2100,7 @@ function nearbyHostiles(maxDistance = 10) {
 }
 
 async function retreatAndRecover(reason) {
+  lastCombatRetreatAt = Date.now()
   bot.pvp.stop()
 
   const anchor = nearestHumanPlayer()
@@ -2143,7 +2152,9 @@ async function survivalTick() {
     if (hostile) {
       const swarmPressure = hostileList.length >= 3
       const creeperPressure = hostileList.some(e => e.name === 'creeper' && bot.entity.position.distanceTo(e.position) < 4.5)
-      if (swarmPressure || creeperPressure || bot.health <= 13) {
+      const retreatCooldown = Date.now() - lastCombatRetreatAt < 10_000
+
+      if (swarmPressure || creeperPressure || bot.health <= 13 || retreatCooldown) {
         await retreatAndRecover(swarmPressure ? 'hostile swarm' : `close ${hostile.name}`)
       } else if (hasAnySword()) {
         if (!bot.pvp.target) {
@@ -2231,7 +2242,7 @@ async function safetyCheck() {
 
   if (autoState.job && recentPositions.length >= 5) {
     const step = String(autoState.currentStep || '')
-    const allowStuckCheck = step.startsWith('mine:') || step.includes('plan:gather')
+    const allowStuckCheck = step.startsWith('mine:')
     const activelyPathing = !!bot.pathfinder?.goal
     const currentlyDigging = !!bot.targetDigBlock
 
