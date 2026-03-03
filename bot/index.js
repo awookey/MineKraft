@@ -2118,12 +2118,13 @@ async function autoMineTick(job) {
 
   // --- NEW CODE START: bug 3 mining Y-floor guard ---
   const botY = Math.floor(bot.entity.position.y)
+  const yDepthAllowance = job.target === 'stone' ? 10 : 4
   // --- NEW CODE END: bug 3 mining Y-floor guard ---
   const targetBlock = bot.findBlock({
     matching: b => {
       if (!b || !b.position) return false
       // --- NEW CODE START: bug 3 mining Y-floor guard ---
-      if (b.position.y < botY - 4) return false
+      if (b.position.y < botY - yDepthAllowance) return false
       // --- NEW CODE END: bug 3 mining Y-floor guard ---
       if (!blockIds.includes(b.type)) return false
       // --- NEW CODE START: allow surface stone in autoMine scan ---
