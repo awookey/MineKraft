@@ -1,0 +1,69 @@
+services:
+  minecraft:
+    image: itzg/minecraft-server:java21
+    container_name: silas-minecraft
+    restart: unless-stopped
+    ports:
+      - "25565:25565"
+    environment:
+      EULA: "TRUE"
+      TYPE: "PAPER"
+      VERSION: "1.21.4"
+      MEMORY: "6G"
+      ONLINE_MODE: "TRUE"
+      ENABLE_WHITELIST: "TRUE"
+      DIFFICULTY: "hard"
+      MAX_PLAYERS: "12"
+      MOTD: "SilasCraft - Family Chaos Realm"
+      ENABLE_ROLLING_LOGS: "TRUE"
+      ALLOW_FLIGHT: "TRUE"
+      VIEW_DISTANCE: "10"
+      SIMULATION_DISTANCE: "8"
+      SPAWN_PROTECTION: "8"
+      ENABLE_RCON: "TRUE"
+      RCON_PASSWORD: "${RCON_PASSWORD:-change_me}"
+      OPS: "${MC_OPS:-}"
+      WHITELIST: "${MC_WHITELIST:-}"
+      OVERRIDE_SERVER_PROPERTIES: "true"
+    volumes:
+      - ./server-data:/data
+    healthcheck:
+      test: ["CMD", "mc-health"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+
+  mc-backup:
+    image: itzg/mc-backup
+    container_name: silas-minecraft-backup
+    restart: unless-stopped
+    depends_on:
+      minecraft:
+        condition: service_healthy
+    environment:
+      BACKUP_INTERVAL: "24h"
+      PRUNE_BACKUPS_DAYS: "14"
+      INITIAL_DELAY: "2m"
+      RCON_HOST: minecraft
+      RCON_PORT: "25575"
+      RCON_PASSWORD: "${RCON_PASSWORD:-change_me}"
+      SRC_DIR: "/data"
+      DEST_DIR: "/backups"
+      BACKUP_NAME: "world"
+    volumes:
+      - ./server-data:/data:ro
+      - ./backups:/backups
+
+  silasbot:
+    build:
+      context: ./bot
+    container_name: silas-mineflayer
+    restart: unless-stopped
+    depends_on:
+      minecraft:
+        condition: service_healthy
+    env_file:
+      - ./.env
+    volumes:
+      - ./bot/auth-cache:/app/auth-cache
+      - ./bot/data:/app/data

@@ -1,0 +1,16 @@
+{
+  "name": "silas-mineflayer-bot",
+  "version": "0.1.0",
+  "description": "Silas quest and companion bot for family Minecraft realm",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "mineflayer": "^4.35.0",
+    "mineflayer-pathfinder": "^2.4.5",
+    "mineflayer-pvp": "^1.3.2",
+    "prismarine-viewer": "^1.28.0"
+  }
+}

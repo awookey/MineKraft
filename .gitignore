@@ -1,0 +1,24 @@
+# Environment / secrets
+.env
+.env.local
+
+# Runtime auth and state
+bot/auth-cache/
+bot/data/*.json
+!bot/data/.gitkeep
+
+# Minecraft runtime data
+server-data/
+backups/
+
+# Node artifacts
+node_modules/
+bot/node_modules/
+npm-debug.log*
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
