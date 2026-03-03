@@ -1549,6 +1549,14 @@ async function planTask(job, botRef) {
       const key = normalized.task || `${normalized.method}:${normalized.item}`
       autoState.currentStep = `plan:${key}`
 
+      if (
+        normalized.item &&
+        ['collectBlocks', 'craftItem', 'smeltItem'].includes(normalized.method) &&
+        itemCount(normalized.item) >= normalized.amount
+      ) {
+        continue
+      }
+
       const before = normalized.item ? itemCount(normalized.item) : 0
       const execState = await debugRepairLoop(normalized, job, 3)
       const result = execState?.result || { ok: false, reason: execState?.reason || 'unknown' }
