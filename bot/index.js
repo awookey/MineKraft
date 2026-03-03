@@ -41,6 +41,7 @@ const recentPositions = []
 let lastStuckNudgeAt = 0
 let lastWeaponBootstrapAt = 0
 let lastCombatRetreatAt = 0
+let combatRearmAt = 0
 
 const autoState = {
   enabled: false,
@@ -2101,6 +2102,11 @@ function nearbyHostiles(maxDistance = 10) {
 
 async function retreatAndRecover(reason) {
   lastCombatRetreatAt = Date.now()
+  const hardReason = String(reason || '')
+  if (hardReason.includes('hostile') || hardReason.includes('safety') || hardReason.includes('low health')) {
+    combatRearmAt = Math.max(combatRearmAt, Date.now() + 12_000)
+  }
+
   bot.pvp.stop()
 
   const anchor = nearestHumanPlayer()
@@ -2150,11 +2156,13 @@ async function survivalTick() {
     const hostileList = nearbyHostiles(8)
     const hostile = hostileList[0] || null
     if (hostile) {
+      const now = Date.now()
       const swarmPressure = hostileList.length >= 3
       const creeperPressure = hostileList.some(e => e.name === 'creeper' && bot.entity.position.distanceTo(e.position) < 4.5)
-      const retreatCooldown = Date.now() - lastCombatRetreatAt < 10_000
+      const retreatCooldown = now - lastCombatRetreatAt < 10_000
+      const rearmWindow = now < combatRearmAt
 
-      if (swarmPressure || creeperPressure || bot.health <= 13 || retreatCooldown) {
+      if (swarmPressure || creeperPressure || bot.health <= 13 || retreatCooldown || rearmWindow) {
         await retreatAndRecover(swarmPressure ? 'hostile swarm' : `close ${hostile.name}`)
       } else if (hasAnySword()) {
         if (!bot.pvp.target) {
@@ -2166,6 +2174,7 @@ async function survivalTick() {
       }
     } else if (bot.pvp.target && !guardTarget) {
       bot.pvp.stop()
+      if (bot.health > 15) combatRearmAt = 0
     }
 
     if (bot.food < 14 && Date.now() - lastFoodTryAt > 12000) {
@@ -2223,7 +2232,7 @@ async function safetyCheck() {
 
   if (autoState.keepDaytime && now - lastDaytimeThreatSweepAt > 12_000) {
     const daytimeThreats = nearbyHostiles(12)
-    if (daytimeThreats.length > 0) {
+    if (daytimeThreats.length > 0 && !autoState.job) {
       lastDaytimeThreatSweepAt = now
       autoSay(`Daytime sweep: ${daytimeThreats.length} hostile(s) still nearby.`, 8000)
       await survivalTick()
