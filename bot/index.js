@@ -982,8 +982,13 @@ async function clearAboveBlock(targetBlock) {
     return { ok: true, skipped: 'air-above' }
   }
 
+  if (n === 'bedrock' || n === 'obsidian') {
+    return { ok: false, blocked: true, reason: 'unbreakable-above' }
+  }
+
   const clearable = new Set(['grass_block', 'dirt', 'gravel', 'sand', 'rooted_dirt'])
-  if (!clearable.has(above.name)) return { ok: true, skipped: 'not-clearable' }
+  const oreAbove = /_ore$/.test(n) || n === 'ancient_debris'
+  if (!clearable.has(above.name) && !oreAbove) return { ok: true, skipped: 'not-clearable' }
 
   await equipBestToolForBlock(above)
   await bot.dig(above, true).catch(() => {})
