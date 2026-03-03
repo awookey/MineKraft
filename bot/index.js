@@ -1512,6 +1512,21 @@ function normalizePlannerStep(step) {
   }
 }
 
+function plannerItemCount(itemName) {
+  const n = String(itemName || '').toLowerCase().trim()
+  if (!n) return 0
+
+  if (n === 'cobblestone') {
+    return itemCount('cobblestone') + itemCount('stone') + itemCount('cobbled_deepslate') + itemCount('deepslate')
+  }
+
+  if (n === 'stone') {
+    return itemCount('stone') + itemCount('cobblestone')
+  }
+
+  return itemCount(n)
+}
+
 function plannerSkillKey(job) {
   const kind = String(job?.kind || 'task').toLowerCase().trim()
   const target = String(job?.target || '').toLowerCase().trim()
@@ -1701,16 +1716,16 @@ async function planTask(job, botRef) {
       if (
         normalized.item &&
         ['collectBlocks', 'craftItem', 'smeltItem'].includes(normalized.method) &&
-        itemCount(normalized.item) >= normalized.amount
+        plannerItemCount(normalized.item) >= normalized.amount
       ) {
         continue
       }
 
-      const before = normalized.item ? itemCount(normalized.item) : 0
+      const before = normalized.item ? plannerItemCount(normalized.item) : 0
       const execState = await debugRepairLoop(normalized, job, 3)
       const result = execState?.result || { ok: false, reason: execState?.reason || 'unknown' }
 
-      const after = normalized.item ? itemCount(normalized.item) : before
+      const after = normalized.item ? plannerItemCount(normalized.item) : before
       const inventoryMoved = normalized.item ? after >= before : true
       const ok = !!result?.ok && inventoryMoved
 
