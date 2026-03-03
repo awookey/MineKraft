@@ -2126,9 +2126,10 @@ async function autoMineTick(job) {
       if (b.position.y < botY - 4) return false
       // --- NEW CODE END: bug 3 mining Y-floor guard ---
       if (!blockIds.includes(b.type)) return false
-      // --- NEW CODE START: skip unsafe under-feet targets in autoMine scan ---
-      if (isUnsafeDigTarget(b)) return false
-      // --- NEW CODE END: skip unsafe under-feet targets in autoMine scan ---
+      // --- NEW CODE START: allow surface stone in autoMine scan ---
+      const isSurface = ['stone', 'cobblestone', 'deepslate', 'cobbled_deepslate'].includes(b.name)
+      if (!isSurface && isUnsafeDigTarget(b)) return false
+      // --- NEW CODE END: allow surface stone in autoMine scan ---
       return true
     },
     maxDistance: 24
