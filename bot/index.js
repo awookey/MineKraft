@@ -9,13 +9,6 @@ const { pathfinder, goals, Movements } = require('mineflayer-pathfinder')
 const { Vec3 } = require('vec3')
 const pvp = require('mineflayer-pvp').plugin
 
-const nativeWarn = console.warn.bind(console)
-console.warn = (...args) => {
-  const msg = args.map(a => String(a)).join(' ')
-  if (msg.includes('deprecated physicTick')) return
-  nativeWarn(...args)
-}
-
 const dataDir = path.join(__dirname, 'data')
 const profilePath = path.join(dataDir, 'profiles.json')
 const worldStatePath = path.join(dataDir, 'world-state.json')
@@ -1321,15 +1314,14 @@ async function placeStructure(type, opts = {}) {
   if (done.size !== uniqueOrdered.length) {
     const unresolved = uniqueOrdered.filter(step => !done.has(`${step.pos.x},${step.pos.y},${step.pos.z},${step.item}`))
     const failed = unresolved
-      .filter(step => !done.has(`${step.pos.x},${step.pos.y},${step.pos.z},${step.item}`))
       .slice(0, 8)
       .map(step => {
         const key = `${step.pos.x},${step.pos.y},${step.pos.z},${step.item}`
         return { item: step.item, at: [step.pos.x, step.pos.y, step.pos.z], reason: lastReasons[key] || 'unresolved' }
       })
 
-    say(`Build ${buildType} partial: placed ${placed}, failed ${unresolved.length}.`)
-    return { ok: false, reason: 'placement-failed', placed, skipped, failed }
+    say(`Build ${buildType} partial: placed ${placed}, failed ${failed.length}/${unresolved.length}.`)
+    return { ok: false, reason: 'placement-failed', placed, skipped, failed, failedTotal: unresolved.length }
   }
 
   say(`Structure ${buildType} (${materialStyle}) complete. Placed ${placed} blocks.`)
