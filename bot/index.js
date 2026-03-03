@@ -8,6 +8,8 @@ const { Titles } = require('prismarine-auth')
 const { pathfinder, goals, Movements } = require('mineflayer-pathfinder')
 const { Vec3 } = require('vec3')
 const pvp = require('mineflayer-pvp').plugin
+const autoEat = require('mineflayer-auto-eat').plugin
+const toolPlugin = require('mineflayer-tool').plugin
 
 const dataDir = path.join(__dirname, 'data')
 const profilePath = path.join(dataDir, 'profiles.json')
@@ -891,6 +893,13 @@ async function craftItem(itemName, amount = 1, table = null) {
 async function equipBestToolForBlock(block) {
   if (!block) return
 
+  // --- NEW CODE START: FIX 2 use mineflayer-tool equipForBlock ---
+  if (bot.tool?.equipForBlock) {
+    await bot.tool.equipForBlock(block).catch(() => {})
+    return
+  }
+  // --- NEW CODE END: FIX 2 use mineflayer-tool equipForBlock ---
+
   const pluginTool = bot.pathfinder?.bestHarvestTool?.(block)
   if (pluginTool) {
     await bot.equip(pluginTool, 'hand').catch(() => {})
@@ -966,8 +975,11 @@ async function clearAboveBlock(targetBlock) {
   if (!above) return { ok: true, skipped: 'no-above' }
 
   const n = String(above.name || '')
-  if (n.includes('water') || n.includes('lava') || isAirBlock(above)) {
-    return { ok: true, skipped: 'fluid-or-air' }
+  if (n.includes('water') || n.includes('lava')) {
+    return { ok: false, blocked: true, reason: 'fluid-above' }
+  }
+  if (isAirBlock(above)) {
+    return { ok: true, skipped: 'air-above' }
   }
 
   const clearable = new Set(['grass_block', 'dirt', 'gravel', 'sand', 'rooted_dirt'])
@@ -1093,7 +1105,14 @@ async function collectBlocks(blockName, amount = 1, opts = {}) {
     }
 
     // --- NEW CODE START: clear above target before surface stone dig ---
-    await clearAboveBlock(targetBlock)
+    const aboveState = await clearAboveBlock(targetBlock)
+    if (aboveState?.blocked) {
+      const key = `${targetBlock.position.x},${targetBlock.position.y},${targetBlock.position.z}`
+      unsafeTargets.set(key, Date.now() + 10_000)
+      autoSay('Cover block obstructed; moving to next spot.', 7000)
+      await new Promise(resolve => setTimeout(resolve, 300))
+      continue
+    }
     // --- NEW CODE END: clear above target before surface stone dig ---
 
     await equipBestToolForBlock(targetBlock)
@@ -2017,8 +2036,9 @@ async function autoMineTick(job) {
     return autoSay('Unsafe dig angle detected, repositioning.', 6000)
   }
 
-  const pickaxe = pickBestItem(['netherite_pickaxe', 'diamond_pickaxe', 'iron_pickaxe', 'stone_pickaxe', 'wooden_pickaxe'])
-  if (pickaxe) await bot.equip(pickaxe, 'hand').catch(() => {})
+  // --- NEW CODE START: FIX 2 auto mine uses mineflayer-tool ---
+  await equipBestToolForBlock(targetBlock)
+  // --- NEW CODE END: FIX 2 auto mine uses mineflayer-tool ---
 
   await bot.dig(targetBlock, true).catch(() => {})
 }
@@ -2416,26 +2436,7 @@ async function survivalTick() {
     }
     // --- NEW CODE END: FIX 2 smarter combat/kiting/retreat logic ---
 
-    // --- NEW CODE START: FIX 1 two-tier emergency/normal eating ---
-    // Emergency eat: health dropping fast, no cooldown
-    if (bot.health <= 14) {
-      const food = pickFoodItem()
-      if (food) {
-        await bot.equip(food, 'hand').catch(() => {})
-        await bot.consume().catch(() => {})
-        lastFoodTryAt = Date.now()
-      }
-    }
-    // Normal eat: hunger low, 8s cooldown
-    else if (bot.food < 16 && Date.now() - lastFoodTryAt > 8000) {
-      const food = pickFoodItem()
-      if (food) {
-        await bot.equip(food, 'hand').catch(() => {})
-        await bot.consume().catch(() => {})
-        lastFoodTryAt = Date.now()
-      }
-    }
-    // --- NEW CODE END: FIX 1 two-tier emergency/normal eating ---
+    // Auto-eat plugin handles all food consumption in survivalTick.
   } finally {
     survivalBusy = false
   }
@@ -2454,17 +2455,10 @@ async function safetyCheck() {
   })
   while (recentPositions.length > 5) recentPositions.shift()
 
-  // --- NEW CODE START: FIX 1 emergency eat in safetyCheck ---
   if (bot.health <= 10) {
-    const food = pickFoodItem()
-    if (food) {
-      await bot.equip(food, 'hand').catch(() => {})
-      await bot.consume().catch(() => {})
-    }
     await retreatAndRecover('safety: low health')
     return
   }
-  // --- NEW CODE END: FIX 1 emergency eat in safetyCheck ---
 
   if (bot.entity.isInLava || bot.entity.isInWater) {
     await retreatAndRecover('safety: bad terrain')
@@ -2575,8 +2569,32 @@ function createBot() {
 
   bot.loadPlugin(pathfinder)
   bot.loadPlugin(pvp)
+  // --- NEW CODE START: FIX 2 mineflayer-tool plugin ---
+  bot.loadPlugin(toolPlugin)
+  // --- NEW CODE END: FIX 2 mineflayer-tool plugin ---
+
+  // --- NEW CODE START: FIX 3 noPath unblock + reroute ---
+  bot.on('path_update', (results) => {
+    if (results?.status === 'noPath') {
+      bot.pathfinder.setGoal(null)
+      autoState.lastError = 'noPath-blocked'
+      autoSay('Cannot reach target, rerouting.', 8000)
+      const a = nearestAnchorPosition()
+      if (a) {
+        bot.pathfinder.setGoal(new goals.GoalNear(a.x, a.y, a.z, 3))
+      }
+    }
+  })
+  // --- NEW CODE END: FIX 3 noPath unblock + reroute ---
 
   bot.once('spawn', () => {
+    // --- NEW CODE START: FIX 1 plugin auto-eat ---
+    bot.loadPlugin(autoEat)
+    // mineflayer-auto-eat v4 API
+    bot.autoEat.enable()
+    bot.autoEat.options.priority = 'foodPoints'
+    bot.autoEat.options.bannedFood = []
+    // --- NEW CODE END: FIX 1 plugin auto-eat ---
     const mcData = require('minecraft-data')(bot.version)
     mcDataRef = mcData
     const movement = new Movements(bot, mcData)
