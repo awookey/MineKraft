@@ -34,6 +34,8 @@ const cfg = {
 
 const useCollectBlockPlugin = String(process.env.USE_COLLECTBLOCK_PLUGIN || 'true').toLowerCase() !== 'false'
 
+const STABILITY_MODE = String(process.env.SILAS_STABILITY_MODE || 'true').toLowerCase() !== 'false'
+
 let bot
 let activeMode = cfg.mode
 let followTarget = null
@@ -49,6 +51,16 @@ let lastCombatRetreatAt = 0
 let collectScoutIndex = 0
 let combatRearmAt = 0
 let lastMineSidestepAt = 0
+let reconnecting = false
+let lastSpawnAt = 0
+let disconnectStreak = 0
+let reconnectStabilizeUntil = 0
+
+const commandThrottleState = {
+  lastByKey: new Map(),
+  lastComeAt: 0,
+  lastComeUser: null
+}
 
 const autoState = {
   enabled: false,
@@ -61,7 +73,7 @@ const autoState = {
   currentStep: null,
   lastError: null,
   lastSuccess: null,
-  keepDaytime: true,
+  keepDaytime: false,
   lastDaytimeSetAt: 0
 }
 
@@ -638,6 +650,44 @@ function autoSay(msg, minGapMs = 8000) {
   say(msg)
 }
 
+function throttleHit(key, minGapMs) {
+  const now = Date.now()
+  const last = commandThrottleState.lastByKey.get(key) || 0
+  if (now - last < minGapMs) return true
+  commandThrottleState.lastByKey.set(key, now)
+  return false
+}
+
+function shouldThrottleCommand(username, command, args = []) {
+  const sub = String(args[0] || '').toLowerCase()
+
+  if (command === 'come') {
+    return throttleHit(`${username}:come`, 5000)
+  }
+
+  if (command === 'auto') {
+    const burst = throttleHit(`${username}:auto:burst`, 1200)
+    const sig = `${sub}:${String(args[1] || '')}:${String(args[2] || '')}`
+    const duplicate = throttleHit(`${username}:auto:${sig}`, 3500)
+    return burst || duplicate
+  }
+
+  return false
+}
+
+function isDuplicateComeWhilePathing(username) {
+  const now = Date.now()
+  const goalActive = !!bot?.pathfinder?.goal
+  const sameUserRecent = commandThrottleState.lastComeUser === username && (now - commandThrottleState.lastComeAt) < 10000
+  commandThrottleState.lastComeAt = now
+  commandThrottleState.lastComeUser = username
+  return goalActive && sameUserRecent
+}
+
+function inReconnectStabilizationWindow() {
+  return Date.now() < reconnectStabilizeUntil
+}
+
 function itemCount(itemName) {
   return (bot.inventory.items() || []).filter(i => i.name === itemName).reduce((sum, i) => sum + i.count, 0)
 }
@@ -816,10 +866,13 @@ async function ensureCraftingTableReady(opts = {}) {
       if (moveToTable) {
         bot.pathfinder.setGoal(new goals.GoalNear(table.position.x, table.position.y, table.position.z, 2))
         autoSay('Moving to nearby crafting table...')
+        return { ready: false, table }
       }
-      return { ready: false, table }
+      // When move is disabled, treat far table as unavailable and try local craft/place fallback.
+      table = null
+    } else {
+      return { ready: true, table }
     }
-    return { ready: true, table }
   }
 
   if (itemCount('crafting_table') < 1) {
@@ -1901,76 +1954,68 @@ async function planTask(job, botRef) {
   const skillKey = plannerSkillKey(job)
   const cachedSkill = getSkillPlan(skillKey)
 
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const useCached = attempt === 0 && cachedSkill && Array.isArray(cachedSkill.prerequisiteTasks) && cachedSkill.prerequisiteTasks.length > 0
-    const plan = useCached
-      ? cachedSkill
-      : await callPlannerLLM(goal, failedTasks)
+  const plannedTasks = Array.isArray(cachedSkill?.prerequisiteTasks)
+    ? [...cachedSkill.prerequisiteTasks].sort((a, b) => Number(a.order || 0) - Number(b.order || 0))
+    : []
 
-    const plannedTasks = Array.isArray(plan.prerequisiteTasks)
-      ? [...plan.prerequisiteTasks].sort((a, b) => Number(a.order || 0) - Number(b.order || 0))
-      : []
-    const tasks = plannedTasks.length ? plannedTasks : fallbackPlannerTasks(job)
+  const tasks = plannedTasks.length ? plannedTasks : fallbackPlannerTasks(job)
 
-    if (!tasks.length) {
-      if (job.kind === 'mine' || job.kind === 'craft') {
-        return true
-      }
-      if (!failedTasks.includes('empty-plan')) failedTasks.push('empty-plan')
+  if (!tasks.length) {
+    autoState.lastError = null
+    return true
+  }
+
+  for (const step of tasks) {
+    const normalized = normalizePlannerStep(step)
+    const key = normalized.task || `${normalized.method}:${normalized.item}`
+    autoState.currentStep = `plan:${key}`
+
+    if (
+      normalized.item &&
+      ['collectBlocks', 'craftItem', 'smeltItem'].includes(normalized.method) &&
+      plannerItemCount(normalized.item) >= normalized.amount
+    ) {
       continue
     }
 
-    for (const step of tasks) {
-      const normalized = normalizePlannerStep(step)
-      const key = normalized.task || `${normalized.method}:${normalized.item}`
-      autoState.currentStep = `plan:${key}`
+    const before = normalized.item ? plannerItemCount(normalized.item) : 0
+    const execState = await debugRepairLoop(normalized, job, 3)
+    const result = execState?.result || { ok: false, reason: execState?.reason || 'unknown' }
 
-      if (
-        normalized.item &&
-        ['collectBlocks', 'craftItem', 'smeltItem'].includes(normalized.method) &&
-        plannerItemCount(normalized.item) >= normalized.amount
-      ) {
-        continue
+    const after = normalized.item ? plannerItemCount(normalized.item) : before
+    const inventoryMoved = normalized.item ? after >= before : true
+    const ok = !!result?.ok && inventoryMoved
+
+    if (!ok) {
+      const reasons = (execState?.errors || []).filter(Boolean).join(' | ')
+      if (reasons) {
+        autoState.lastError = `${key}:${reasons}`
+        autoSay(`Repair loop: ${key} failed (${reasons}).`, 8000)
       }
 
-      const before = normalized.item ? plannerItemCount(normalized.item) : 0
-      const execState = await debugRepairLoop(normalized, job, 3)
-      const result = execState?.result || { ok: false, reason: execState?.reason || 'unknown' }
-
-      const after = normalized.item ? plannerItemCount(normalized.item) : before
-      const inventoryMoved = normalized.item ? after >= before : true
-      const ok = !!result?.ok && inventoryMoved
-
-      if (!ok) {
-        const reasons = (execState?.errors || []).filter(Boolean).join(' | ')
-        if (reasons) {
-          autoState.lastError = `${key}:${reasons}`
-          autoSay(`Repair loop: ${key} failed (${reasons}).`, 8000)
-        }
-
-        failedCounts[key] = (failedCounts[key] || 0) + 1
-        if (failedCounts[key] >= 2 && !failedTasks.includes(key)) {
-          failedTasks.push(key)
-        }
+      failedCounts[key] = (failedCounts[key] || 0) + 1
+      if (failedCounts[key] >= 2 && !failedTasks.includes(key)) {
+        failedTasks.push(key)
       }
     }
+  }
 
-    if (!failedTasks.length) {
-      autoState.lastError = null
-      autoState.lastSuccess = `planner-ready:${job.kind}:${job.target}`
-      if (tasks.length > 0) {
-        recordSkillSuccess(skillKey, {
-          goal,
-          prerequisiteTasks: tasks
-        })
-      }
-      return true
+  if (!failedTasks.length) {
+    autoState.lastError = null
+    autoState.lastSuccess = `planner-ready:${job.kind}:${job.target}`
+    if (tasks.length > 0) {
+      recordSkillSuccess(skillKey, {
+        goal,
+        prerequisiteTasks: tasks
+      })
     }
+    return true
   }
 
   say(`Planner warnings: ${failedTasks.join(', ') || 'none'}. Proceeding with best effort.`)
   return true
 }
+
 // --- NEW CODE END: planner wiring (step 4) ---
 
 async function craftPlanksAndSticks() {
@@ -2024,6 +2069,265 @@ function hasAnySword() {
   return !!pickBestItem(['netherite_sword', 'diamond_sword', 'iron_sword', 'stone_sword', 'wooden_sword'])
 }
 
+function hasAnyAxe() {
+  return !!pickBestItem(['netherite_axe', 'diamond_axe', 'iron_axe', 'stone_axe', 'wooden_axe'])
+}
+
+const PREFLIGHT_TOOL_REQUIREMENTS = {
+  mine_coal: ['wooden_pickaxe+'],
+  mine_stone: ['wooden_pickaxe+'],
+  mine_iron: ['stone_pickaxe+'],
+  mine_wood: ['axe'],
+  build_any: ['wooden_pickaxe+'],
+  craft_any: []
+}
+
+const PREFLIGHT_LOG_TYPES = ['oak_log', 'birch_log', 'spruce_log', 'jungle_log', 'acacia_log', 'dark_oak_log', 'mangrove_log', 'cherry_log']
+const PREFLIGHT_PLANK_BY_LOG = {
+  oak_log: 'oak_planks',
+  birch_log: 'birch_planks',
+  spruce_log: 'spruce_planks',
+  jungle_log: 'jungle_planks',
+  acacia_log: 'acacia_planks',
+  dark_oak_log: 'dark_oak_planks',
+  mangrove_log: 'mangrove_planks',
+  cherry_log: 'cherry_planks'
+}
+const PREFLIGHT_PLANK_TYPES = Object.values(PREFLIGHT_PLANK_BY_LOG)
+
+function sumItemCounts(names = []) {
+  return names.reduce((sum, n) => sum + itemCount(n), 0)
+}
+
+function pickAnyAvailableLog() {
+  return PREFLIGHT_LOG_TYPES.find(n => itemCount(n) > 0) || null
+}
+
+function preflightRequirementKeys(job) {
+  const kind = String(job?.kind || '').toLowerCase()
+  const target = String(job?.target || '').toLowerCase()
+
+  if (kind === 'mine') {
+    if (target === 'iron') return PREFLIGHT_TOOL_REQUIREMENTS.mine_iron
+    if (target === 'wood') return PREFLIGHT_TOOL_REQUIREMENTS.mine_wood
+    if (target === 'stone') return PREFLIGHT_TOOL_REQUIREMENTS.mine_stone
+    return PREFLIGHT_TOOL_REQUIREMENTS.mine_coal
+  }
+
+  if (kind === 'build') return PREFLIGHT_TOOL_REQUIREMENTS.build_any
+  return []
+}
+
+async function preflightRecoverNoPath(label = 'preflight') {
+  if (autoState.lastError !== 'noPath-blocked') return false
+  const a = nearestAnchorPosition()
+  if (a) {
+    bot.pathfinder.setGoal(new goals.GoalNear(a.x, a.y, a.z, 3))
+  } else {
+    const p = bot.entity.position
+    bot.pathfinder.setGoal(new goals.GoalNear(p.x + 3, p.y, p.z + 3, 2))
+  }
+  autoSay(`${label}: path blocked, rerouting.`, 4000)
+  await new Promise(resolve => setTimeout(resolve, 600))
+  return true
+}
+
+async function preflightEnsurePlanks(minPlanks = 1, trace = []) {
+  let totalPlanks = sumItemCounts(PREFLIGHT_PLANK_TYPES)
+  if (totalPlanks >= minPlanks) return true
+
+  if (!pickAnyAvailableLog()) {
+    const needLogs = Math.max(1, Math.ceil((minPlanks - totalPlanks) / 4))
+    trace.push(`gather_logs:${needLogs}`)
+    const got = await collectBlocks('wood', needLogs, { timeoutMs: 12000 })
+    if (!got?.ok && (got?.collected || 0) <= 0) {
+      await preflightRecoverNoPath('gather logs')
+      return false
+    }
+  }
+
+  const useLog = pickAnyAvailableLog()
+  if (!useLog) return false
+  const plank = PREFLIGHT_PLANK_BY_LOG[useLog]
+  const batches = Math.max(1, Math.ceil((minPlanks - totalPlanks) / 4))
+  trace.push(`craft_${plank}:${batches}`)
+  await craftItem(plank, batches, null)
+
+  totalPlanks = sumItemCounts(PREFLIGHT_PLANK_TYPES)
+  return totalPlanks >= minPlanks
+}
+
+async function preflightEnsureSticks(minSticks = 2, trace = []) {
+  if (itemCount('stick') >= minSticks) return true
+
+  const needSticks = minSticks - itemCount('stick')
+  const batches = Math.max(1, Math.ceil(needSticks / 4))
+  const needPlanks = batches * 2
+
+  const planksOk = await preflightEnsurePlanks(needPlanks, trace)
+  if (!planksOk) return false
+
+  trace.push(`craft_stick:${batches}`)
+  await craftItem('stick', batches, null)
+  return itemCount('stick') >= minSticks
+}
+
+async function preflightEnsureCobblestone(minCobble = 3, trace = []) {
+  if (plannerItemCount('cobblestone') >= minCobble) return true
+
+  const need = Math.max(1, minCobble - plannerItemCount('cobblestone'))
+  trace.push(`gather_stone:${need}`)
+  const got = await collectBlocks('stone', need, { timeoutMs: 12000 })
+  if (!got?.ok && (got?.collected || 0) <= 0) {
+    await preflightRecoverNoPath('gather stone')
+  }
+  return plannerItemCount('cobblestone') >= minCobble
+}
+
+async function preflightEnsureCraftingTable(trace = []) {
+  const nearby = nearestCraftingTable(8)
+  if (nearby) return true
+
+  if (itemCount('crafting_table') <= 0) {
+    const planksOk = await preflightEnsurePlanks(4, trace)
+    if (!planksOk) return false
+    trace.push('craft_crafting_table:1')
+    await craftItem('crafting_table', 1, null)
+  }
+
+  const tableState = await ensureCraftingTableReady({ maxDistance: 8 })
+  return !!tableState?.ready && !!tableState?.table
+}
+
+async function preflightCraftTool(toolName, trace = [], depth = 0) {
+  if (depth > 2) return false
+
+  if (toolName === 'wooden_pickaxe') {
+    if (hasAnyPickaxe()) return true
+    if (!(await preflightEnsurePlanks(3, trace))) return false
+    if (!(await preflightEnsureSticks(2, trace))) return false
+    if (!(await preflightEnsureCraftingTable(trace))) return false
+    const table = nearestCraftingTable(8)
+    trace.push('craft_wooden_pickaxe:1')
+    await craftItem('wooden_pickaxe', 1, table)
+    return hasAnyPickaxe()
+  }
+
+  if (toolName === 'stone_pickaxe') {
+    if (hasStoneTierPickaxe()) return true
+    if (!(await preflightCraftTool('wooden_pickaxe', trace, depth + 1))) return false
+    if (!(await preflightEnsureCobblestone(3, trace))) return false
+    if (!(await preflightEnsureSticks(2, trace))) return false
+    if (!(await preflightEnsureCraftingTable(trace))) return false
+    const table = nearestCraftingTable(8)
+    trace.push('craft_stone_pickaxe:1')
+    await craftItem('stone_pickaxe', 1, table)
+    return hasStoneTierPickaxe()
+  }
+
+  if (toolName === 'wooden_axe') {
+    if (hasAnyAxe()) return true
+    if (!(await preflightEnsurePlanks(3, trace))) return false
+    if (!(await preflightEnsureSticks(2, trace))) return false
+    if (!(await preflightEnsureCraftingTable(trace))) return false
+    const table = nearestCraftingTable(8)
+    trace.push('craft_wooden_axe:1')
+    await craftItem('wooden_axe', 1, table)
+    return hasAnyAxe()
+  }
+
+  if (toolName === 'stone_axe') {
+    if (hasAnyAxe()) return true
+    if (!(await preflightCraftTool('wooden_pickaxe', trace, depth + 1))) return false
+    if (!(await preflightEnsureCobblestone(3, trace))) return false
+    if (!(await preflightEnsureSticks(2, trace))) return false
+    if (!(await preflightEnsureCraftingTable(trace))) return false
+    const table = nearestCraftingTable(8)
+    trace.push('craft_stone_axe:1')
+    await craftItem('stone_axe', 1, table)
+    return hasAnyAxe()
+  }
+
+  return true
+}
+
+async function preflightEnsureRequirement(req, trace = [], warnings = []) {
+  if (req === 'wooden_pickaxe+') {
+    if (hasAnyPickaxe()) return true
+    const ok = await preflightCraftTool('wooden_pickaxe', trace)
+    if (!ok) warnings.push('missing:any-pickaxe')
+    return ok
+  }
+
+  if (req === 'stone_pickaxe+') {
+    if (hasStoneTierPickaxe()) return true
+    const ok = await preflightCraftTool('stone_pickaxe', trace)
+    if (!ok) warnings.push('missing:stone-pickaxe')
+    return ok
+  }
+
+  if (req === 'axe') {
+    if (hasAnyAxe()) return true
+    const preferStone = plannerItemCount('cobblestone') >= 3
+    const ok = await preflightCraftTool(preferStone ? 'stone_axe' : 'wooden_axe', trace)
+    if (!ok) warnings.push('missing:axe')
+    return ok
+  }
+
+  return true
+}
+
+function craftTargetNeedsTable(job) {
+  if (job?.kind !== 'craft') return false
+  const target = String(job?.item || job?.target || '').toLowerCase()
+  const item = mcDataRef?.itemsByName?.[target]
+  if (!item) return false
+
+  const invRecipes = bot.recipesFor(item.id, null, 1, null)
+  if (invRecipes?.length) return false
+
+  const table = nearestCraftingTable(16)
+  const tableRecipes = bot.recipesFor(item.id, null, 1, table || null)
+  return !!tableRecipes?.length
+}
+
+async function preflightCheck(job) {
+  const trace = []
+  const warnings = []
+
+  const reqs = [...preflightRequirementKeys(job)]
+  if (craftTargetNeedsTable(job)) reqs.push('crafting_table')
+
+  for (const req of reqs) {
+    if (req === 'crafting_table') {
+      const ok = await preflightEnsureCraftingTable(trace)
+      if (!ok) warnings.push('missing:crafting-table')
+      continue
+    }
+
+    try {
+      await preflightEnsureRequirement(req, trace, warnings)
+    } catch (err) {
+      warnings.push(`preflight-exception:${err?.message || 'unknown'}`)
+    }
+  }
+
+  const key = `preflight:${plannerSkillKey(job)}`
+  if (trace.length) {
+    recordSkillSuccess(key, {
+      goal: job.goal || `${job.kind} ${job.target}`,
+      prerequisiteTasks: trace.map((t, i) => ({ order: i + 1, task: t, method: 'preflight', amount: 1 }))
+    })
+  }
+
+  if (warnings.length) {
+    autoState.lastError = `preflight:${warnings[0]}`
+    autoSay(`Preflight warnings: ${warnings.join(', ')}`, 8000)
+  }
+
+  return { ok: warnings.length === 0, warnings, trace }
+}
+
 async function ensureWeaponBootstrap() {
   if (hasAnySword()) return true
 
@@ -2061,9 +2365,10 @@ async function ensureMiningBootstrap(job) {
     return false
   }
 
-  const tableState = await ensureCraftingTableReady({ maxDistance: 8 })
+  const tableState = await ensureCraftingTableReady({ maxDistance: 8, moveToTable: false })
   if (!tableState.ready || !tableState.table) {
-    autoSay('Need a nearby crafting table or any pickaxe handed to me.')
+    autoState.lastError = 'need-local-crafting-table'
+    autoSay('Need a nearby crafting table (or table in inventory) to finish tool bootstrap.')
     return false
   }
   const table = tableState.table
@@ -2407,6 +2712,11 @@ async function autoTick() {
 
   autoState.busy = true
   try {
+    if (Date.now() - lastSpawnAt < 40_000) {
+      autoState.lastError = 'stabilizing-after-reconnect'
+      return
+    }
+
     if (bot.health <= 10 || bot.entity.isInWater || bot.entity.isInLava) {
       await retreatAndRecover('auto safety')
       return
@@ -2418,6 +2728,7 @@ async function autoTick() {
     // --- NEW CODE START: prerequisite planner gate (step 4) ---
     if (['mine', 'craft', 'build'].includes(job.kind) && !job.planPrepared) {
       try {
+        await preflightCheck(job)
         const ready = await planTask(job, bot)
         if (!ready && job.kind === 'build') return
       } catch (err) {
@@ -2750,6 +3061,7 @@ async function survivalTick() {
 // --- NEW CODE START: safety rails loop (step 2) ---
 async function safetyCheck() {
   if (!bot?.entity) return
+  if (Date.now() - lastSpawnAt < 40_000) return
 
   const now = Date.now()
   recentPositions.push({
@@ -2781,7 +3093,7 @@ async function safetyCheck() {
 
   const timeOfDay = bot.time?.timeOfDay ?? 0
   const isNight = timeOfDay >= 13000 && timeOfDay <= 23000
-  if (isNight && autoState.keepDaytime && now - autoState.lastDaytimeSetAt > 60_000) {
+  if (!STABILITY_MODE && isNight && autoState.keepDaytime && now - autoState.lastDaytimeSetAt > 60_000) {
     autoState.lastDaytimeSetAt = now
     bot.chat('/time set day')
     autoSay('Daytime lock: setting day for test runs.', 10000)
@@ -2868,7 +3180,7 @@ function createBot() {
     deviceType: 'Win32',
     version: '1.21.4',
     hideErrors: false,
-    checkTimeoutInterval: 30_000,
+    checkTimeoutInterval: 90_000,
     profilesFolder: path.join(__dirname, 'auth-cache')
   })
 
@@ -2894,6 +3206,9 @@ function createBot() {
   // --- NEW CODE END: FIX 3 noPath unblock + reroute ---
 
   bot.once('spawn', () => {
+    reconnecting = false
+    lastSpawnAt = Date.now()
+    reconnectStabilizeUntil = Date.now() + 30_000
     // --- NEW CODE START: FIX 1 plugin auto-eat ---
     bot.loadPlugin(autoEat)
     // mineflayer-auto-eat v4 API
@@ -2932,9 +3247,10 @@ function createBot() {
 
     // --- NEW CODE START: dedicated safety rail loop (2s) ---
     if (safetyTicker) clearInterval(safetyTicker)
+    const safetyInterval = STABILITY_MODE ? 8000 : 2000
     safetyTicker = setInterval(() => {
       safetyCheck().catch(() => {})
-    }, 2000)
+    }, safetyInterval)
     // --- NEW CODE END: dedicated safety rail loop (2s) ---
   })
 
@@ -2948,6 +3264,17 @@ function createBot() {
 
     const [, cmd = '', ...args] = message.trim().split(/\s+/)
     const command = cmd.toLowerCase()
+
+    if (shouldThrottleCommand(username, command, args)) {
+      return say('Easy there — one command at a time so I do not desync.')
+    }
+
+    const sub = (args[0] || '').toLowerCase()
+    const isMovementCommand = ['come', 'follow', 'stay', 'guard'].includes(command)
+    const isHeavyAutoCommand = command === 'auto' && ['on', 'mine', 'craft', 'build', 'gather'].includes(sub)
+    if (inReconnectStabilizationWindow() && (isMovementCommand || isHeavyAutoCommand)) {
+      return say('Stabilising after reconnect. Retry that in about 30 seconds.')
+    }
 
     if (command === 'help') {
       say('Cmds: follow|come|stay|guard|quest start [type]/status/done/abandon/types|gather|craft|build <plan> [wood|stone]|task|inventory|deposit|stash|chest|daytime on|off|status|auto on|off|status|debug|cancel|mine|craft|build <plan> [wood|stone]|profile|class <type>|checkin|party create/join/leave/status|mode|pvp|event now')
@@ -3092,6 +3419,10 @@ function createBot() {
     }
 
     if (command === 'come') {
+      if (isDuplicateComeWhilePathing(username)) {
+        return say(`Already moving to you, ${username}. Give me a few seconds.`)
+      }
+
       const player = bot.players[username]?.entity
       if (!player) {
         if (isAdmin(username)) {
@@ -3157,9 +3488,11 @@ function createBot() {
       if (threat && !bot.pvp.target) bot.pvp.attack(threat)
     }
 
-    if (Date.now() - lastSurvivalTickAt > 3000) {
+    const warmup = Date.now() - lastSpawnAt < 40_000
+    const tickIntervalMs = STABILITY_MODE ? (warmup ? 15000 : 6000) : (warmup ? 12000 : 3000)
+    if (Date.now() - lastSurvivalTickAt > tickIntervalMs) {
       lastSurvivalTickAt = Date.now()
-      survivalTick().catch(() => {})
+      if (!STABILITY_MODE) survivalTick().catch(() => {})
       autoTick().catch(() => {})
     }
   })
@@ -3172,8 +3505,26 @@ function createBot() {
       clearInterval(safetyTicker)
       safetyTicker = null
     }
-    console.log('[silasbot] disconnected, reconnecting in 15s')
-    setTimeout(createBot, 15_000)
+
+    reconnecting = true
+    reconnectStabilizeUntil = Date.now() + 30_000
+    autoState.busy = false
+    autoState.currentStep = 'reconnecting'
+    autoState.lastError = 'connection-dropped'
+    if (autoState.job) {
+      autoState.job = null
+      autoState.lastSuccess = 'Auto job cancelled after disconnect'
+    }
+    try { bot.pathfinder.setGoal(null) } catch {}
+    try { bot.pvp.stop() } catch {}
+
+    const uptimeMs = Date.now() - (lastSpawnAt || Date.now())
+    if (uptimeMs < 120_000) disconnectStreak += 1
+    else disconnectStreak = 1
+
+    const reconnectDelay = disconnectStreak >= 4 ? 60_000 : disconnectStreak >= 2 ? 30_000 : 15_000
+    console.log(`[silasbot] disconnected, reconnecting in ${Math.round(reconnectDelay / 1000)}s (streak ${disconnectStreak})`)
+    setTimeout(createBot, reconnectDelay)
   })
 }
 
