@@ -806,12 +806,17 @@ async function placeChestFromInventory() {
   return false
 }
 
-async function ensureCraftingTableReady() {
-  let table = nearestCraftingTable(32)
+async function ensureCraftingTableReady(opts = {}) {
+  const maxDistance = Number.isFinite(opts?.maxDistance) ? opts.maxDistance : 32
+  const moveToTable = opts?.moveToTable !== false
+
+  let table = nearestCraftingTable(maxDistance)
   if (table) {
     if (bot.entity.position.distanceTo(table.position) > 3.2) {
-      bot.pathfinder.setGoal(new goals.GoalNear(table.position.x, table.position.y, table.position.z, 2))
-      autoSay('Moving to nearby crafting table...')
+      if (moveToTable) {
+        bot.pathfinder.setGoal(new goals.GoalNear(table.position.x, table.position.y, table.position.z, 2))
+        autoSay('Moving to nearby crafting table...')
+      }
       return { ready: false, table }
     }
     return { ready: true, table }
@@ -918,7 +923,7 @@ async function equipBestToolForBlock(block) {
   }
 
   if (n.includes('stone') || n.includes('ore') || n.includes('deepslate') || n.includes('cobblestone')) {
-    const pick = pickBestItem(['netherite_pickaxe', 'diamond_pickaxe', 'iron_pickaxe', 'stone_pickaxe', 'wooden_pickaxe'])
+    const pick = pickBestItem(['netherite_pickaxe', 'diamond_pickaxe', 'iron_pickaxe', 'stone_pickaxe', 'golden_pickaxe', 'wooden_pickaxe'])
     if (pick) await bot.equip(pick, 'hand').catch(() => {})
   }
 }
@@ -1028,7 +1033,7 @@ async function collectBlocksLegacy(blockName, amount = 1, opts = {}) {
   const matchingIds = blockIdsFromNames(blockNames)
   const unsafeTargets = new Map()
   const isStoneSearch = blockNames.some(n => ['stone', 'cobblestone', 'deepslate', 'cobbled_deepslate'].includes(n))
-  const scanDistance = isStoneSearch ? 40 : 24
+  const scanDistance = isStoneSearch ? 64 : 24
 
   if (!matchingIds.length) {
     return { ok: false, reason: `unknown-block:${blockName}`, collected: 0, target: targetAmount }
@@ -1186,6 +1191,9 @@ async function collectBlocksWithPlugin(blockName, amount = 1, opts = {}) {
       const a = nearestAnchorPosition()
       if (a) {
         bot.pathfinder.setGoal(new goals.GoalNear(a.x + ox, a.y, a.z + oz, 4))
+      } else {
+        const p = bot.entity.position
+        bot.pathfinder.setGoal(new goals.GoalNear(p.x + ox, p.y, p.z + oz, 4))
       }
       autoSay(`No nearby ${blockNames[0]} found, scouting wider.`, 7000)
       await new Promise(resolve => setTimeout(resolve, 500))
@@ -1225,6 +1233,59 @@ async function collectBlocks(blockName, amount = 1, opts = {}) {
   }
 
   return collectBlocksLegacy(blockName, amount, opts)
+}
+
+async function nudgeSurfaceStoneExposure() {
+  const stoneIds = blockIdsFromNames(['stone', 'cobblestone', 'deepslate', 'cobbled_deepslate'])
+  if (!stoneIds.length) return false
+
+  const clearables = new Set(['grass_block', 'dirt', 'coarse_dirt', 'podzol', 'rooted_dirt', 'sand', 'red_sand', 'gravel'])
+  const feet = bot.entity.position.floored()
+  const offsets = [new Vec3(1, 0, 0), new Vec3(-1, 0, 0), new Vec3(0, 0, 1), new Vec3(0, 0, -1)]
+
+  for (const off of offsets) {
+    const base = feet.plus(off)
+    for (const depth of [1, 2, 3, 4]) {
+      const cover = bot.blockAt(base.offset(0, -depth, 0))
+      const below = bot.blockAt(base.offset(0, -(depth + 1), 0))
+      if (!cover || !below) continue
+      if (!clearables.has(cover.name)) continue
+      if (!stoneIds.includes(below.type)) continue
+
+      bot.pathfinder.setGoal(new goals.GoalNear(base.x, base.y, base.z, 1))
+      if (bot.entity.position.distanceTo(base) > 2.4) return true
+
+      await equipBestToolForBlock(cover)
+      await bot.dig(cover, true).catch(() => {})
+      const exposed = bot.blockAt(base.offset(0, -(depth + 1), 0))
+      if (exposed && stoneIds.includes(exposed.type) && !isUnsafeDigTarget(exposed)) {
+        await equipBestToolForBlock(exposed)
+        await bot.dig(exposed, true).catch(() => {})
+      }
+      return true
+    }
+  }
+  return false
+}
+
+function manualNearbyStoneCandidate(maxRadius = 4, maxDepth = 8) {
+  const names = new Set(['stone', 'cobblestone', 'deepslate', 'cobbled_deepslate'])
+  const p = bot.entity.position.floored()
+  let best = null
+
+  for (let dx = -maxRadius; dx <= maxRadius; dx++) {
+    for (let dz = -maxRadius; dz <= maxRadius; dz++) {
+      for (let dy = 1; dy <= maxDepth; dy++) {
+        const b = bot.blockAt(p.offset(dx, -dy, dz))
+        if (!b || !names.has(b.name)) continue
+        if (isWaterHazardTarget(b) || isUnsafeDigTarget(b)) continue
+        const d = bot.entity.position.distanceTo(b.position)
+        if (!best || d < best.d) best = { b, d }
+      }
+    }
+  }
+
+  return best?.b || null
 }
 // --- NEW CODE END: collectblock migration wrapper ---
 
@@ -1952,7 +2013,7 @@ async function gatherNearbyLog() {
 }
 
 function hasAnyPickaxe() {
-  return !!pickBestItem(['netherite_pickaxe', 'diamond_pickaxe', 'iron_pickaxe', 'stone_pickaxe', 'wooden_pickaxe'])
+  return !!pickBestItem(['netherite_pickaxe', 'diamond_pickaxe', 'iron_pickaxe', 'stone_pickaxe', 'golden_pickaxe', 'wooden_pickaxe'])
 }
 
 function hasStoneTierPickaxe() {
@@ -2000,8 +2061,11 @@ async function ensureMiningBootstrap(job) {
     return false
   }
 
-  const tableState = await ensureCraftingTableReady()
-  if (!tableState.ready || !tableState.table) return false
+  const tableState = await ensureCraftingTableReady({ maxDistance: 8 })
+  if (!tableState.ready || !tableState.table) {
+    autoSay('Need a nearby crafting table or any pickaxe handed to me.')
+    return false
+  }
   const table = tableState.table
 
   if (!hasAnyPickaxe()) {
@@ -2021,7 +2085,7 @@ async function ensureMiningBootstrap(job) {
       bot.pathfinder.setGoal(new goals.GoalNear(stoneBlock.position.x, stoneBlock.position.y, stoneBlock.position.z, 1))
       if (bot.entity.position.distanceTo(stoneBlock.position) > 2.2) return false
 
-      const anyPick = pickBestItem(['wooden_pickaxe', 'stone_pickaxe', 'iron_pickaxe', 'diamond_pickaxe', 'netherite_pickaxe'])
+      const anyPick = pickBestItem(['wooden_pickaxe', 'golden_pickaxe', 'stone_pickaxe', 'iron_pickaxe', 'diamond_pickaxe', 'netherite_pickaxe'])
       if (anyPick) await bot.equip(anyPick, 'hand').catch(() => {})
       await bot.dig(stoneBlock, true).catch(() => {})
       return false
@@ -2084,13 +2148,6 @@ async function cleanupPlacedCraftingTable() {
 
 async function autoMineTick(job) {
   const blockIds = blockIdsFromNames(job.blocks)
-  const p = bot.entity?.position
-  const posStr = p ? `${p.x.toFixed(1)},${p.y.toFixed(1)},${p.z.toFixed(1)}` : 'unknown'
-  console.log('[automine] mcDataRef:', !!mcDataRef, 'blockIds for stone:', blockIdsFromNames(['stone','cobblestone']).join(','), 'bot pos:', posStr)
-  const testBlock = bot.blockAt(bot.entity.position.offset(0, -1, 0))
-  console.log('[automine] under feet:', testBlock?.name, 'type:', testBlock?.type, 'matches:', blockIds.includes(testBlock?.type))
-  const testFind = bot.findBlock({ matching: b => b && blockIds.includes(b.type), maxDistance: 4 })
-  console.log('[automine] findBlock at range 4:', testFind?.name, testFind?.position)
   autoState.currentStep = `mine:${job.target}`
 
   if (bot.entity.isInWater || lowBreath()) {
@@ -2116,21 +2173,85 @@ async function autoMineTick(job) {
     return autoSay('Regrouping to stay in safe radius.')
   }
 
-  // --- NEW CODE START: stone jobs use collect path first to avoid scan-loop ---
+  // --- NEW CODE START: stone jobs custom local miner (avoid collect timeout loop) ---
   if (job.target === 'stone') {
-    const collectResult = await collectBlocks(job.target, job.amount, { timeoutMs: 20_000 })
-    if (collectResult?.ok || plannerItemCount('cobblestone') >= job.amount) {
-      awardXp(job.owner, 120, `auto-mine:${job.target}`)
-      return stopAutoJob(`Auto mine complete: ${job.target} x${job.amount}. Kept materials in inventory for next job.`)
+    const feet = bot.entity.position.floored()
+    const support = bot.blockAt(feet.offset(0, -1, 0))
+    if (support && blockIds.includes(support.type) && Date.now() - lastMineSidestepAt > 2500) {
+      const offsets = [new Vec3(1, 0, 0), new Vec3(-1, 0, 0), new Vec3(0, 0, 1), new Vec3(0, 0, -1)]
+      const moveTo = offsets
+        .map(v => feet.plus(v))
+        .find(pos => {
+          const foot = bot.blockAt(pos)
+          const head = bot.blockAt(pos.offset(0, 1, 0))
+          const floor = bot.blockAt(pos.offset(0, -1, 0))
+          const footAir = isAirBlock(foot) || isReplaceableBlock(foot)
+          const headAir = isAirBlock(head) || isReplaceableBlock(head)
+          const floorSafe = floor && !isAirBlock(floor) && !String(floor.name || '').includes('water') && !String(floor.name || '').includes('lava')
+          const floorNotTarget = floor && !blockIds.includes(floor.type)
+          return footAir && headAir && floorSafe && floorNotTarget
+        })
+      if (moveTo) {
+        lastMineSidestepAt = Date.now()
+        bot.pathfinder.setGoal(new goals.GoalNear(moveTo.x, moveTo.y, moveTo.z, 0))
+        autoState.lastError = 'standing-on-target-reposition'
+        return autoSay('Repositioning off target block to mine safely.', 5000)
+      }
     }
-    if ((collectResult?.collected || 0) > 0) {
-      autoState.lastError = null
+
+    const supportPos = feet.offset(0, -1, 0)
+    let localStone = bot.findBlock({
+      matching: b => {
+        if (!b || !b.position) return false
+        if (!blockIds.includes(b.type)) return false
+        if (b.position.x === supportPos.x && b.position.y === supportPos.y && b.position.z === supportPos.z) return false
+        if (b.position.y < Math.floor(bot.entity.position.y) - 12) return false
+        return !isWaterHazardTarget(b)
+      },
+      maxDistance: 12
+    })
+    if (!localStone) localStone = manualNearbyStoneCandidate(6, 10)
+    if (localStone && localStone.position.x === supportPos.x && localStone.position.y === supportPos.y && localStone.position.z === supportPos.z) {
+      localStone = null
+    }
+
+    if (localStone) {
+      bot.pathfinder.setGoal(new goals.GoalNear(localStone.position.x, localStone.position.y, localStone.position.z, 1))
+      if (bot.entity.position.distanceTo(localStone.position) <= 2.2) {
+        const aboveState = await clearAboveBlock(localStone)
+        if (!aboveState?.blocked) {
+          await equipBestToolForBlock(localStone)
+          await bot.dig(localStone, true).catch(() => {})
+          autoState.lastError = null
+        }
+      }
       return
     }
-    autoState.lastError = collectResult?.reason || 'stone-collect-timeout'
-    return
+
+    const nudged = await nudgeSurfaceStoneExposure()
+    if (nudged) {
+      autoState.lastError = 'surface-probe'
+      return
+    }
+
+    const scoutOffsets = [
+      [4, 4], [-4, 4], [4, -4], [-4, -4],
+      [10, 0], [-10, 0], [0, 10], [0, -10],
+      [18, 0], [-18, 0], [0, 18], [0, -18]
+    ]
+    const [ox, oz] = scoutOffsets[collectScoutIndex % scoutOffsets.length]
+    collectScoutIndex += 1
+    const a = nearestAnchorPosition()
+    if (a) {
+      bot.pathfinder.setGoal(new goals.GoalNear(a.x + ox, a.y, a.z + oz, 4))
+    } else {
+      const p2 = bot.entity.position
+      bot.pathfinder.setGoal(new goals.GoalNear(p2.x + ox, p2.y, p2.z + oz, 4))
+    }
+    autoState.lastError = 'stone-searching'
+    return autoSay('No nearby stone-family found, scouting wider.', 7000)
   }
-  // --- NEW CODE END: stone jobs use collect path first to avoid scan-loop ---
+  // --- NEW CODE END: stone jobs custom local miner (avoid collect timeout loop) ---
 
   // --- NEW CODE START: bug 3 mining Y-floor guard ---
   const botY = Math.floor(bot.entity.position.y)
