@@ -36,6 +36,16 @@ const useCollectBlockPlugin = String(process.env.USE_COLLECTBLOCK_PLUGIN || 'tru
 
 const STABILITY_MODE = String(process.env.SILAS_STABILITY_MODE || 'true').toLowerCase() !== 'false'
 
+const ENABLE_AUTOEAT_PLUGIN = String(process.env.SILAS_ENABLE_AUTOEAT || 'true').toLowerCase() !== 'false'
+const ENABLE_PVP_PLUGIN = String(process.env.SILAS_ENABLE_PVP || 'true').toLowerCase() !== 'false'
+const ULTRA_MINIMAL_MODE = String(process.env.SILAS_ULTRA_MINIMAL_MODE || 'false').toLowerCase() === 'true'
+const MINIMAL_ENABLE_AUTOTICK = String(process.env.SILAS_MINIMAL_ENABLE_AUTOTICK || 'false').toLowerCase() === 'true'
+const MINIMAL_SKIP_MINE = String(process.env.SILAS_MINIMAL_SKIP_MINE || 'false').toLowerCase() === 'true'
+const MINIMAL_DISABLE_PLANNER_GATE = String(process.env.SILAS_MINIMAL_DISABLE_PLANNER_GATE || 'false').toLowerCase() === 'true'
+const MINIMAL_DISABLE_AUTOTICK_SAFETY = String(process.env.SILAS_MINIMAL_DISABLE_AUTOTICK_SAFETY || 'false').toLowerCase() === 'true'
+
+const DISABLE_MINE_SAFETY_CHURN = String(process.env.SILAS_DISABLE_MINE_SAFETY_CHURN || 'false').toLowerCase() === 'true'
+
 let bot
 let activeMode = cfg.mode
 let followTarget = null
@@ -51,6 +61,12 @@ let lastCombatRetreatAt = 0
 let collectScoutIndex = 0
 let combatRearmAt = 0
 let lastMineSidestepAt = 0
+let lastEscapeAttemptAt = 0
+let escapeWindowStartAt = 0
+let escapeAttemptsInWindow = 0
+let lastCraftTableMoveAt = 0
+let craftTableMoveAttempts = 0
+let craftTableWindowStartAt = 0
 let reconnecting = false
 let lastSpawnAt = 0
 let disconnectStreak = 0
@@ -173,7 +189,7 @@ const autoMineTargets = {
   iron: { blocks: ['iron_ore', 'deepslate_iron_ore'], item: 'iron_ore' },
   coal: { blocks: ['coal_ore', 'deepslate_coal_ore'], item: 'coal' },
   stone: { blocks: ['stone', 'deepslate', 'cobblestone'], item: 'cobblestone' },
-  wood: { blocks: ['oak_log', 'birch_log', 'spruce_log', 'jungle_log', 'acacia_log', 'dark_oak_log', 'mangrove_log', 'cherry_log'], item: 'oak_log' },
+  wood: { blocks: ['oak_log', 'birch_log', 'spruce_log', 'jungle_log', 'acacia_log', 'dark_oak_log', 'mangrove_log', 'cherry_log', 'pale_oak_log'], item: 'oak_log' },
   wool: { blocks: ['white_wool', 'black_wool', 'gray_wool', 'light_gray_wool', 'brown_wool', 'red_wool', 'orange_wool', 'yellow_wool', 'lime_wool', 'green_wool', 'cyan_wool', 'light_blue_wool', 'blue_wool', 'purple_wool', 'magenta_wool', 'pink_wool'], item: 'white_wool' }
 }
 
@@ -714,6 +730,37 @@ function blockIdsFromNames(names = []) {
   return names.map(n => mcDataRef.blocksByName[n]?.id).filter(Boolean)
 }
 
+
+function isWoodLikeName(name) {
+  const n = String(name || '').toLowerCase()
+  if (!n) return false
+  if (n.includes('leaves')) return false
+  if (n.startsWith('stripped_')) return false
+  return n.endsWith('_log') || n.endsWith('_wood') || n.endsWith('_stem') || n.endsWith('_hyphae') || n === 'bamboo_block'
+}
+
+function woodBlockNames() {
+  if (!mcDataRef?.blocksByName) {
+    return autoMineTargets.wood.blocks
+  }
+
+  const names = Object.keys(mcDataRef.blocksByName).filter(isWoodLikeName)
+  return names.length ? names : autoMineTargets.wood.blocks
+}
+
+function woodItemCount() {
+  if (!bot?.inventory) return 0
+  return (bot.inventory.items() || [])
+    .filter(i => isWoodLikeName(i?.name))
+    .reduce((sum, i) => sum + (i?.count || 0), 0)
+}
+
+function autoJobProgressCount(job) {
+  if (!job) return 0
+  if (job.target === 'wood') return woodItemCount()
+  return itemCount(job.item)
+}
+
 function stopAutoJob(message = 'Auto task cancelled.') {
   if (message && !message.toLowerCase().includes('failed')) autoState.lastSuccess = message
   autoState.job = null
@@ -727,7 +774,7 @@ function autoStatus() {
   if (!autoState.enabled) return say('Auto mode is OFF. Use !silas auto on')
   if (!autoState.job) return say(`Auto mode ON. Idle. Radius ${autoState.maxRadius} blocks.`)
   const j = autoState.job
-  const progress = j.item ? `${itemCount(j.item)}/${j.amount}` : 'active'
+  const progress = j.item ? `${autoJobProgressCount(j)}/${j.amount}` : 'active'
   const material = j.material ? ` ${j.material}` : ''
   say(`Auto mode ON. Job: ${j.kind} ${j.target}${material} (${progress}).`)
 }
@@ -864,13 +911,30 @@ async function ensureCraftingTableReady(opts = {}) {
   if (table) {
     if (bot.entity.position.distanceTo(table.position) > 3.2) {
       if (moveToTable) {
-        bot.pathfinder.setGoal(new goals.GoalNear(table.position.x, table.position.y, table.position.z, 2))
-        autoSay('Moving to nearby crafting table...')
+        const now = Date.now()
+        if (now - lastCraftTableMoveAt > 7000) {
+          lastCraftTableMoveAt = now
+          if (now - craftTableWindowStartAt > 90_000) {
+            craftTableWindowStartAt = now
+            craftTableMoveAttempts = 0
+          }
+          craftTableMoveAttempts += 1
+          bot.pathfinder.setGoal(new goals.GoalNear(table.position.x, table.position.y, table.position.z, 2))
+          autoSay('Moving to nearby crafting table...')
+        }
+
+        if (craftTableMoveAttempts >= 6) {
+          autoState.lastError = 'craft-table-path-loop'
+          autoSay('Crafting table path looks stuck. Need a table placed nearby.', 6000)
+          return { ready: false, table: null }
+        }
+
         return { ready: false, table }
       }
       // When move is disabled, treat far table as unavailable and try local craft/place fallback.
       table = null
     } else {
+      craftTableMoveAttempts = 0
       return { ready: true, table }
     }
   }
@@ -893,6 +957,7 @@ async function ensureCraftingTableReady(opts = {}) {
         bot.pathfinder.setGoal(new goals.GoalNear(table.position.x, table.position.y, table.position.z, 2))
         return { ready: false, table }
       }
+      craftTableMoveAttempts = 0
       return { ready: true, table }
     }
   }
@@ -1060,7 +1125,7 @@ async function clearAboveBlock(targetBlock) {
 
 function collectProfile(rawName) {
   const name = String(rawName || '').toLowerCase().trim()
-  const logSet = ['oak_log', 'birch_log', 'spruce_log', 'jungle_log', 'acacia_log', 'dark_oak_log', 'mangrove_log', 'cherry_log']
+  const logSet = woodBlockNames()
 
   if (name === 'oak_log' || name === 'log' || name === 'wood') {
     return { blockNames: logSet, countItems: logSet }
@@ -1100,7 +1165,7 @@ async function collectBlocksLegacy(blockName, amount = 1, opts = {}) {
   const before = countItems.reduce((sum, n) => sum + itemCount(n), 0)
 
   while (Date.now() - startedAt < timeoutMs) {
-    if (bot.entity.isInWater || lowBreath()) {
+    if (!DISABLE_MINE_SAFETY_CHURN && (bot.entity.isInWater || lowBreath())) {
       await retreatAndRecover('collect safety: water')
       await new Promise(resolve => setTimeout(resolve, 500))
       continue
@@ -1426,6 +1491,21 @@ function isLikelyOneByOneTrap() {
 
 async function escapeOneByOneTrap() {
   if (!isLikelyOneByOneTrap()) return false
+
+  const now = Date.now()
+  if (now - lastEscapeAttemptAt < 10_000) return false
+  lastEscapeAttemptAt = now
+
+  if (now - escapeWindowStartAt > 60_000) {
+    escapeWindowStartAt = now
+    escapeAttemptsInWindow = 0
+  }
+  escapeAttemptsInWindow += 1
+  if (escapeAttemptsInWindow > 4) {
+    autoState.lastError = 'escape-loop'
+    autoSay('Escape loop detected; pausing trap-break attempts.', 8000)
+    return false
+  }
 
   const p = bot.entity.position.floored()
   const exits = [
@@ -2046,7 +2126,7 @@ async function craftPlanksAndSticks() {
 }
 
 async function gatherNearbyLog() {
-  const logIds = blockIdsFromNames(autoMineTargets.wood.blocks)
+  const logIds = blockIdsFromNames(woodBlockNames())
   const logBlock = bot.findBlock({ matching: b => logIds.includes(b.type), maxDistance: 20 })
   if (!logBlock) return false
 
@@ -2082,7 +2162,7 @@ const PREFLIGHT_TOOL_REQUIREMENTS = {
   craft_any: []
 }
 
-const PREFLIGHT_LOG_TYPES = ['oak_log', 'birch_log', 'spruce_log', 'jungle_log', 'acacia_log', 'dark_oak_log', 'mangrove_log', 'cherry_log']
+const PREFLIGHT_LOG_TYPES = ['oak_log', 'birch_log', 'spruce_log', 'jungle_log', 'acacia_log', 'dark_oak_log', 'mangrove_log', 'cherry_log', 'pale_oak_log']
 const PREFLIGHT_PLANK_BY_LOG = {
   oak_log: 'oak_planks',
   birch_log: 'birch_planks',
@@ -2452,16 +2532,17 @@ async function cleanupPlacedCraftingTable() {
 }
 
 async function autoMineTick(job) {
+  if (MINIMAL_SKIP_MINE) return
   const blockIds = blockIdsFromNames(job.blocks)
   autoState.currentStep = `mine:${job.target}`
 
-  if (bot.entity.isInWater || lowBreath()) {
+  if (!DISABLE_MINE_SAFETY_CHURN && (bot.entity.isInWater || lowBreath())) {
     autoState.lastError = 'water-risk'
     await retreatAndRecover('mine safety: water')
     return
   }
 
-  if (itemCount(job.item) >= job.amount) {
+  if (autoJobProgressCount(job) >= job.amount) {
     awardXp(job.owner, 120, `auto-mine:${job.target}`)
     return stopAutoJob(`Auto mine complete: ${job.target} x${job.amount}. Kept materials in inventory for next job.`)
   }
@@ -2568,7 +2649,8 @@ async function autoMineTick(job) {
       // --- NEW CODE START: bug 3 mining Y-floor guard ---
       if (b.position.y < botY - yDepthAllowance) return false
       // --- NEW CODE END: bug 3 mining Y-floor guard ---
-      if (!blockIds.includes(b.type)) return false
+      const matchesTarget = job.target === 'wood' ? isWoodLikeName(b.name) : blockIds.includes(b.type)
+      if (!matchesTarget) return false
       // --- NEW CODE START: allow surface stone in autoMine scan ---
       const isSurface = ['stone', 'cobblestone', 'deepslate', 'cobbled_deepslate'].includes(b.name)
       if (!isSurface && isUnsafeDigTarget(b)) return false
@@ -2612,7 +2694,7 @@ async function autoMineTick(job) {
 
     // --- NEW CODE START: collectblock fallback when direct scan misses target ---
     const collectResult = await collectBlocks(job.target, job.amount, { timeoutMs: 12_000 })
-    if (collectResult?.ok || itemCount(job.item) >= job.amount) {
+    if (collectResult?.ok || autoJobProgressCount(job) >= job.amount) {
       awardXp(job.owner, 120, `auto-mine:${job.target}`)
       return stopAutoJob(`Auto mine complete: ${job.target} x${job.amount}. Kept materials in inventory for next job.`)
     }
@@ -2717,7 +2799,7 @@ async function autoTick() {
       return
     }
 
-    if (bot.health <= 10 || bot.entity.isInWater || bot.entity.isInLava) {
+    if (!MINIMAL_DISABLE_AUTOTICK_SAFETY && (bot.health <= 10 || bot.entity.isInWater || bot.entity.isInLava)) {
       await retreatAndRecover('auto safety')
       return
     }
@@ -2726,7 +2808,7 @@ async function autoTick() {
     autoState.currentStep = `tick:${job.kind}:${job.target}`
 
     // --- NEW CODE START: prerequisite planner gate (step 4) ---
-    if (['mine', 'craft', 'build'].includes(job.kind) && !job.planPrepared) {
+    if (!MINIMAL_DISABLE_PLANNER_GATE && ['mine', 'craft', 'build'].includes(job.kind) && !job.planPrepared) {
       try {
         await preflightCheck(job)
         const ready = await planTask(job, bot)
@@ -2739,7 +2821,13 @@ async function autoTick() {
     }
     // --- NEW CODE END: prerequisite planner gate (step 4) ---
 
-    if (job.kind === 'mine') await autoMineTick(job)
+    if (job.kind === 'mine') {
+      if (MINIMAL_SKIP_MINE) {
+        autoState.lastError = 'minimal-skip-mine'
+        return
+      }
+      await autoMineTick(job)
+    }
     if (job.kind === 'craft') await autoCraftTick(job)
     if (job.kind === 'build') await autoBuildTick(job)
   } catch (err) {
@@ -2829,6 +2917,7 @@ function setClass(player, classType) {
 }
 
 function runWorldEvent(forceBy) {
+  if (!bot?.entity) return
   const onlinePlayers = Object.keys(bot.players || {}).filter(p => p !== bot.username)
   if (!onlinePlayers.length) return
 
@@ -3017,7 +3106,7 @@ async function survivalTick() {
           new goals.GoalNear(kitePos.x, kitePos.y, kitePos.z, 2),
           true
         )
-        if (!bot.pvp.target) {
+        if (bot.pvp && !bot.pvp.target) {
           bot.pvp.attack(hostile)
           autoSay(`Kiting ${hostile.name}.`, 5000)
         }
@@ -3026,7 +3115,7 @@ async function survivalTick() {
 
       // Healthy enough to fight single melee mob
       if (hasAnySword() && !healthLow) {
-        if (!bot.pvp.target) {
+        if (bot.pvp && !bot.pvp.target) {
           bot.pvp.attack(hostile)
           autoSay(`Defending against ${hostile.name}.`, 5000)
         }
@@ -3047,7 +3136,7 @@ async function survivalTick() {
       // No sword — always run
       await retreatAndRecover(`no weapon: ${hostile.name}`)
     } else if (bot.pvp.target && !guardTarget) {
-      bot.pvp.stop()
+      if (bot.pvp) bot.pvp.stop()
       if (bot.health > 15) combatRearmAt = 0
     }
     // --- NEW CODE END: FIX 2 smarter combat/kiting/retreat logic ---
@@ -3060,6 +3149,7 @@ async function survivalTick() {
 
 // --- NEW CODE START: safety rails loop (step 2) ---
 async function safetyCheck() {
+  if (ULTRA_MINIMAL_MODE) return
   if (!bot?.entity) return
   if (Date.now() - lastSpawnAt < 40_000) return
 
@@ -3136,7 +3226,7 @@ async function safetyCheck() {
       const dz = Math.max(...zs) - Math.min(...zs)
       const moved = Math.sqrt(dx * dx + dz * dz)
 
-      if (moved < 0.6 && now - lastStuckNudgeAt > 20000) {
+      if (!DISABLE_MINE_SAFETY_CHURN && moved < 0.6 && now - lastStuckNudgeAt > 20000) {
         lastStuckNudgeAt = now
         bot.setControlState('jump', true)
         setTimeout(() => bot.setControlState('jump', false), 250)
@@ -3185,10 +3275,11 @@ function createBot() {
   })
 
   bot.loadPlugin(pathfinder)
-  bot.loadPlugin(pvp)
+  if (ENABLE_PVP_PLUGIN) bot.loadPlugin(pvp)
   // --- NEW CODE START: collectblock/tool plugin wiring ---
   bot.loadPlugin(toolPlugin)
   bot.loadPlugin(collectBlockPlugin)
+  if (ENABLE_AUTOEAT_PLUGIN) bot.loadPlugin(autoEat)
   // --- NEW CODE END: collectblock/tool plugin wiring ---
 
   // --- NEW CODE START: FIX 3 noPath unblock + reroute ---
@@ -3210,11 +3301,12 @@ function createBot() {
     lastSpawnAt = Date.now()
     reconnectStabilizeUntil = Date.now() + 30_000
     // --- NEW CODE START: FIX 1 plugin auto-eat ---
-    bot.loadPlugin(autoEat)
     // mineflayer-auto-eat v4 API
-    bot.autoEat.enable()
-    bot.autoEat.options.priority = 'foodPoints'
-    bot.autoEat.options.bannedFood = []
+    if (ENABLE_AUTOEAT_PLUGIN && bot.autoEat) {
+      bot.autoEat.enable()
+      bot.autoEat.options.priority = 'foodPoints'
+      bot.autoEat.options.bannedFood = []
+    }
     // --- NEW CODE END: FIX 1 plugin auto-eat ---
     const mcData = require('minecraft-data')(bot.version)
     mcDataRef = mcData
@@ -3242,16 +3334,19 @@ function createBot() {
       say(`Rallying on ${adminAnchor.username} for safety.`)
     }
 
-    if (eventTicker) clearInterval(eventTicker)
-    eventTicker = setInterval(() => runWorldEvent(), 20 * 60 * 1000)
+    if (!ULTRA_MINIMAL_MODE) {
+      if (eventTicker) clearInterval(eventTicker)
+      eventTicker = setInterval(() => runWorldEvent(), 20 * 60 * 1000)
 
-    // --- NEW CODE START: dedicated safety rail loop (2s) ---
-    if (safetyTicker) clearInterval(safetyTicker)
-    const safetyInterval = STABILITY_MODE ? 8000 : 2000
-    safetyTicker = setInterval(() => {
-      safetyCheck().catch(() => {})
-    }, safetyInterval)
-    // --- NEW CODE END: dedicated safety rail loop (2s) ---
+      // --- NEW CODE START: dedicated safety rail loop (2s) ---
+      if (safetyTicker) clearInterval(safetyTicker)
+      const safetyInterval = STABILITY_MODE ? 8000 : 2000
+      safetyTicker = setInterval(() => {
+        safetyCheck().catch(() => {})
+      }, safetyInterval)
+      // --- NEW CODE END: dedicated safety rail loop (2s) ---
+    }
+
   })
 
   bot.on('chat', (username, message) => {
@@ -3413,7 +3508,7 @@ function createBot() {
       followTarget = null
       guardTarget = null
       bot.pathfinder.setGoal(null)
-      bot.pvp.stop()
+      if (bot.pvp) bot.pvp.stop()
       say('Holding position.')
       return
     }
@@ -3459,7 +3554,7 @@ function createBot() {
     if (command === 'pvp') {
       const state = (args[0] || '').toLowerCase()
       if (state === 'off') {
-        bot.pvp.stop()
+        if (bot.pvp) bot.pvp.stop()
         return say('PvP disengaged.')
       }
       if (state === 'on') {
@@ -3485,14 +3580,16 @@ function createBot() {
       const guardEntity = bot.players[guardTarget]?.entity
       if (!guardEntity) return
       const threat = bot.nearestEntity(e => e.type === 'player' && e.username !== guardTarget && e.username !== bot.username && e.position.distanceTo(guardEntity.position) < 5)
-      if (threat && !bot.pvp.target) bot.pvp.attack(threat)
+      if (bot.pvp && threat && !bot.pvp.target) bot.pvp.attack(threat)
     }
+
+    if (ULTRA_MINIMAL_MODE && !MINIMAL_ENABLE_AUTOTICK) return
 
     const warmup = Date.now() - lastSpawnAt < 40_000
     const tickIntervalMs = STABILITY_MODE ? (warmup ? 15000 : 6000) : (warmup ? 12000 : 3000)
     if (Date.now() - lastSurvivalTickAt > tickIntervalMs) {
       lastSurvivalTickAt = Date.now()
-      if (!STABILITY_MODE) survivalTick().catch(() => {})
+      if (!ULTRA_MINIMAL_MODE && !STABILITY_MODE) survivalTick().catch(() => {})
       autoTick().catch(() => {})
     }
   })
@@ -3501,9 +3598,17 @@ function createBot() {
   bot.on('error', err => console.error('[silasbot] error:', err.message))
 
   bot.on('end', () => {
+    try { bot.removeAllListeners() } catch {}
+    try { bot.pathfinder.setGoal(null) } catch {}
+    try { bot.pvp.stop() } catch {}
+
     if (safetyTicker) {
       clearInterval(safetyTicker)
       safetyTicker = null
+    }
+    if (eventTicker) {
+      clearInterval(eventTicker)
+      eventTicker = null
     }
 
     reconnecting = true
