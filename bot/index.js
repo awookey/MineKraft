@@ -2588,7 +2588,9 @@ async function autoMineTick(job) {
   const toolsReady = await ensureMiningBootstrap(job)
   if (!toolsReady) return
 
-  await ensureWeaponBootstrap()
+  if (job.target !== 'wood') {
+    await ensureWeaponBootstrap()
+  }
 
   const anchor = nearestAnchorForAuto()
   const anchorPos = safeEntityPosition(anchor)
@@ -2762,7 +2764,7 @@ async function autoMineTick(job) {
 
   if (bot.entity.position.distanceTo(targetBlock.position) > 2.2) return
 
-  if (isUnsafeDigTarget(targetBlock)) {
+  if (job.target !== 'wood' && isUnsafeDigTarget(targetBlock)) {
     autoState.lastError = 'unsafe-dig-target'
     bot.pathfinder.setGoal(new goals.GoalNear(targetBlock.position.x, targetBlock.position.y + 1, targetBlock.position.z, 2))
     return autoSay('Unsafe dig angle detected, repositioning.', 6000)
