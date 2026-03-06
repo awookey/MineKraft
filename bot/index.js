@@ -736,7 +736,7 @@ function isWoodLikeName(name) {
   if (!n) return false
   if (n.includes('leaves')) return false
   if (n.startsWith('stripped_')) return false
-  return n.endsWith('_log') || n.endsWith('_wood') || n.endsWith('_stem') || n.endsWith('_hyphae') || n === 'bamboo_block'
+  return n.endsWith('_log') || n.endsWith('_stem') || n.endsWith('_hyphae') || n === 'bamboo_block'
 }
 
 function woodBlockNames() {
@@ -1313,7 +1313,8 @@ async function collectBlocksWithPlugin(blockName, amount = 1, opts = {}) {
         const p = bot.entity.position
         bot.pathfinder.setGoal(new goals.GoalNear(p.x + ox, p.y, p.z + oz, 4))
       }
-      autoSay(`No nearby ${blockNames[0]} found, scouting wider.`, 7000)
+      const noNearbyLabel = ['wood', 'log', 'oak_log'].includes(String(blockName || '').toLowerCase()) ? 'wood' : blockNames[0]
+      autoSay(`No nearby ${noNearbyLabel} found, scouting wider.`, 7000)
       await new Promise(resolve => setTimeout(resolve, 500))
       continue
     }
@@ -2426,6 +2427,22 @@ async function ensureWeaponBootstrap() {
 }
 
 async function ensureMiningBootstrap(job) {
+  if (job?.target === 'wood') {
+    if (hasAnyAxe()) return true
+
+    await craftPlanksAndSticks()
+    const tableState = await ensureCraftingTableReady({ maxDistance: 8, moveToTable: false })
+    if (!tableState.ready || !tableState.table) {
+      autoState.lastError = 'need-local-crafting-table'
+      autoSay('Need a nearby crafting table (or table in inventory) to craft an axe.')
+      return false
+    }
+
+    const table = tableState.table
+    await craftItem('wooden_axe', 1, table)
+    return hasAnyAxe()
+  }
+
   const needStoneTier = job.target === 'iron'
 
   if (!needStoneTier && hasAnyPickaxe()) return true
