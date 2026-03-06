@@ -2674,7 +2674,8 @@ async function autoMineTick(job) {
       // --- NEW CODE END: allow surface stone in autoMine scan ---
       return true
     },
-    maxDistance: 24
+    point: job.target === 'wood' && anchorPos ? anchorPos : undefined,
+    maxDistance: job.target === 'wood' ? 16 : 24
   })
 
   if (!targetBlock) {
@@ -2708,6 +2709,12 @@ async function autoMineTick(job) {
       }
     }
     // --- NEW CODE END: sidestep when standing on mineable support block ---
+
+    if (job.target === 'wood') {
+      autoState.lastError = 'no_visible_target_near_owner:wood'
+      if (anchor && anchorPos) bot.pathfinder.setGoal(new goals.GoalFollow(anchor, 2), true)
+      return autoSay('No nearby visible wood near owner. Move me closer to a trunk.', 6000)
+    }
 
     // --- NEW CODE START: collectblock fallback when direct scan misses target ---
     const collectResult = await collectBlocks(job.target, job.amount, { timeoutMs: 12_000 })
