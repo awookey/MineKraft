@@ -761,6 +761,27 @@ function autoJobProgressCount(job) {
   return itemCount(job.item)
 }
 
+function findNearbyWoodBlock(point = null, maxRadius = 16) {
+  if (!bot?.entity) return null
+  const center = point ? point.floored() : bot.entity.position.floored()
+  let best = null
+
+  for (let dx = -maxRadius; dx <= maxRadius; dx++) {
+    for (let dz = -maxRadius; dz <= maxRadius; dz++) {
+      for (let dy = -4; dy <= 8; dy++) {
+        const pos = center.offset(dx, dy, dz)
+        const block = bot.blockAt(pos)
+        if (!block || !isWoodLikeName(block.name)) continue
+
+        const dist = bot.entity.position.distanceTo(block.position)
+        if (!best || dist < best.dist) best = { block, dist }
+      }
+    }
+  }
+
+  return best?.block || null
+}
+
 function stopAutoJob(message = 'Auto task cancelled.') {
   if (message && !message.toLowerCase().includes('failed')) autoState.lastSuccess = message
   autoState.job = null
@@ -2660,23 +2681,23 @@ async function autoMineTick(job) {
   const botY = Math.floor(bot.entity.position.y)
   const yDepthAllowance = job.target === 'stone' ? 10 : 4
   // --- NEW CODE END: bug 3 mining Y-floor guard ---
-  const targetBlock = bot.findBlock({
-    matching: b => {
-      if (!b || !b.position) return false
-      // --- NEW CODE START: bug 3 mining Y-floor guard ---
-      if (b.position.y < botY - yDepthAllowance) return false
-      // --- NEW CODE END: bug 3 mining Y-floor guard ---
-      const matchesTarget = job.target === 'wood' ? isWoodLikeName(b.name) : blockIds.includes(b.type)
-      if (!matchesTarget) return false
-      // --- NEW CODE START: allow surface stone in autoMine scan ---
-      const isSurface = ['stone', 'cobblestone', 'deepslate', 'cobbled_deepslate'].includes(b.name)
-      if (!isSurface && isUnsafeDigTarget(b)) return false
-      // --- NEW CODE END: allow surface stone in autoMine scan ---
-      return true
-    },
-    point: job.target === 'wood' && anchorPos ? anchorPos : undefined,
-    maxDistance: job.target === 'wood' ? 16 : 24
-  })
+  const targetBlock = job.target === 'wood'
+    ? findNearbyWoodBlock(anchorPos || bot.entity.position, 16)
+    : bot.findBlock({
+      matching: b => {
+        if (!b || !b.position) return false
+        // --- NEW CODE START: bug 3 mining Y-floor guard ---
+        if (b.position.y < botY - yDepthAllowance) return false
+        // --- NEW CODE END: bug 3 mining Y-floor guard ---
+        if (!blockIds.includes(b.type)) return false
+        // --- NEW CODE START: allow surface stone in autoMine scan ---
+        const isSurface = ['stone', 'cobblestone', 'deepslate', 'cobbled_deepslate'].includes(b.name)
+        if (!isSurface && isUnsafeDigTarget(b)) return false
+        // --- NEW CODE END: allow surface stone in autoMine scan ---
+        return true
+      },
+      maxDistance: 24
+    })
 
   if (!targetBlock) {
     // --- NEW CODE START: sidestep when standing on mineable support block ---
