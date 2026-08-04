@@ -13,6 +13,8 @@ const {
   woodOperationIsCurrent,
   woodJobGuardDecision,
   woodJobStartDecision,
+  woodJobBlocksCommand,
+  woodThreatReason,
   clusterWoodCandidates,
   chooseWoodTarget,
   assignWoodTarget,
@@ -65,15 +67,44 @@ test('wood jobs require an explicit owner and carry a stable id', () => {
   assert.equal(job.state, WOOD_JOB_STATE.PREPARE)
 })
 
-test('wood job start is blocked while inventory transfer state is active', () => {
+test('wood job start waits for inventory transfers and survival actions', () => {
   assert.deepEqual(woodJobStartDecision({ inventoryTransferCount: 1 }), {
     ok: false,
     reason: 'inventory-transfer-active'
   })
-  assert.deepEqual(woodJobStartDecision({ inventoryTransferCount: 0 }), {
+  assert.deepEqual(woodJobStartDecision({ backgroundActionBusy: true }), {
+    ok: false,
+    reason: 'background-action-busy'
+  })
+  assert.deepEqual(woodJobStartDecision({ inventoryTransferCount: 0, backgroundActionBusy: false }), {
     ok: true,
     reason: null
   })
+})
+
+test('wood action ownership centrally blocks mutating commands but permits status and cancellation', () => {
+  for (const command of ['follow', 'come', 'stay', 'guard', 'gather', 'craft', 'build', 'task', 'deposit', 'stash', 'chest']) {
+    assert.equal(woodJobBlocksCommand(command), true, `${command} must be blocked`)
+  }
+  assert.equal(woodJobBlocksCommand('pvp', ['on']), true)
+  assert.equal(woodJobBlocksCommand('auto', ['mine']), true)
+  assert.equal(woodJobBlocksCommand('auto', ['status']), false)
+  assert.equal(woodJobBlocksCommand('auto', ['cancel']), false)
+  assert.equal(woodJobBlocksCommand('inventory'), false)
+})
+
+test('wood threat policy prioritises close creepers, swarms, and nearby hostiles', () => {
+  assert.equal(woodThreatReason([]), null)
+  assert.equal(woodThreatReason([{ name: 'zombie', distance: 6 }]), 'hostile-nearby:zombie')
+  assert.equal(woodThreatReason([
+    { name: 'zombie', distance: 6 },
+    { name: 'skeleton', distance: 7 },
+    { name: 'spider', distance: 4 }
+  ]), 'hostile-swarm')
+  assert.equal(woodThreatReason([
+    { name: 'zombie', distance: 2 },
+    { name: 'creeper', distance: 4.5 }
+  ]), 'creeper-close')
 })
 
 test('owner and radius guards block or regroup deterministically', () => {

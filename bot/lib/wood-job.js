@@ -117,12 +117,36 @@ function woodJobGuardDecision({ hazard = null, ownerAvailable = false, ownerDist
   return { state: WOOD_JOB_STATE.SCAN_LOCAL_WOOD, reason: null }
 }
 
-function woodJobStartDecision({ hasActiveJob = false, inventoryTransferCount = 0 } = {}) {
+function woodJobStartDecision({ hasActiveJob = false, inventoryTransferCount = 0, backgroundActionBusy = false } = {}) {
   if (hasActiveJob) return { ok: false, reason: 'active-job' }
+  if (backgroundActionBusy) return { ok: false, reason: 'background-action-busy' }
   if (Math.max(0, Math.floor(finiteNumber(inventoryTransferCount))) > 0) {
     return { ok: false, reason: 'inventory-transfer-active' }
   }
   return { ok: true, reason: null }
+}
+
+function woodJobBlocksCommand(command, args = []) {
+  const name = String(command || '').toLowerCase()
+  const sub = String(args[0] || '').toLowerCase()
+  const actionCommands = new Set([
+    'follow', 'come', 'stay', 'guard', 'gather', 'craft', 'build', 'task',
+    'deposit', 'stash', 'chest'
+  ])
+  if (actionCommands.has(name)) return true
+  if (name === 'pvp' && sub === 'on') return true
+  if (name === 'auto' && ['on', 'mine', 'craft', 'build', 'gather'].includes(sub)) return true
+  return false
+}
+
+function woodThreatReason(hostiles = []) {
+  const nearby = (hostiles || []).filter(Boolean)
+  if (!nearby.length) return null
+  if (nearby.some(entity => entity.name === 'creeper' && finiteNumber(entity.distance, Infinity) < 5)) {
+    return 'creeper-close'
+  }
+  if (nearby.length >= 3) return 'hostile-swarm'
+  return `hostile-nearby:${nearby[0].name || 'unknown'}`
 }
 
 function normalizeCandidate(candidate) {
@@ -314,6 +338,8 @@ module.exports = {
   woodOperationIsCurrent,
   woodJobGuardDecision,
   woodJobStartDecision,
+  woodJobBlocksCommand,
+  woodThreatReason,
   clusterWoodCandidates,
   isTargetBlacklisted,
   chooseWoodTarget,

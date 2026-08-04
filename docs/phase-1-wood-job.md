@@ -72,7 +72,9 @@ Approach attempts are bounded to eight auto ticks. Pathfinder `noPath`, approach
 - If the owner is unavailable, the job enters `BLOCKED` and movement stops.
 - If outside the owner radius, the job enters `REGROUP_OWNER`.
 - A different non-admin player cannot cancel, stop, or overwrite the job.
-- Follow, stay, come, guard, PvP, generic safety, and combat/bootstrap loops cannot overwrite wood-owned movement or actions.
+- Follow, stay, come, guard, PvP, chest preparation, inventory transfer, and generic gather/craft/build commands cannot overwrite wood-owned movement or actions.
+- A wood job is rejected while a pre-existing survival/bootstrap action or inventory transfer is still draining.
+- Close creepers, hostile swarms, and nearby hostiles interrupt digging within the wood-owned safety path and retreat only to the named owner.
 - Cancelling stops an in-flight dig and invalidates its target-generation token.
 - An administrator can cancel the job.
 - Disconnecting or dying cancels an active wood job rather than resuming it with a stale inventory baseline.

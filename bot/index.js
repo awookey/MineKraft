@@ -22,6 +22,8 @@ const {
   woodOperationIsCurrent,
   woodJobGuardDecision,
   woodJobStartDecision,
+  woodJobBlocksCommand,
+  woodThreatReason,
   clusterWoodCandidates,
   chooseWoodTarget,
   assignWoodTarget,
@@ -107,6 +109,8 @@ let lastSpawnAt = 0
 let disconnectStreak = 0
 let reconnectStabilizeUntil = 0
 let inventoryTransferCount = 0
+let woodSafetyBusy = false
+let lastWoodThreatCheckAt = 0
 
 const commandThrottleState = {
   lastByKey: new Map(),
@@ -929,8 +933,37 @@ function failCurrentWoodTarget(job, reason, message) {
   return result
 }
 
+function currentWoodThreatReason() {
+  if (!bot?.entity) return null
+  const hostiles = nearbyHostiles(8).map(entity => ({
+    name: entity.name,
+    distance: bot.entity.position.distanceTo(entity.position)
+  }))
+  return woodThreatReason(hostiles)
+}
+
+async function handleWoodSafetyHazard(job, reason, owner = null) {
+  if (!isActiveWoodJob(job)) return false
+  if (woodSafetyBusy) return true
+  woodSafetyBusy = true
+  try {
+    job.targetGeneration = (job.targetGeneration || 0) + 1
+    try { bot.stopDigging() } catch {}
+    try { bot.pvp?.stop() } catch {}
+    bot.pathfinder.setGoal(null)
+    setWoodJobState(job, WOOD_JOB_STATE.BLOCKED, { reason })
+    autoState.currentStep = `wood:${job.state}`
+    autoState.lastError = `wood:${reason}`
+    await retreatAndRecover(`wood safety: ${reason}`, { anchor: owner, strictAnchor: true })
+    return true
+  } finally {
+    woodSafetyBusy = false
+  }
+}
+
 async function autoWoodTick(job) {
   if (!isActiveWoodJob(job)) return
+  if (woodSafetyBusy) return
   if (survivalBusy) {
     setWoodJobState(job, WOOD_JOB_STATE.BLOCKED, { reason: 'background-action-draining' })
     autoState.currentStep = `wood:${job.state}`
@@ -951,7 +984,10 @@ async function autoWoodTick(job) {
   setWoodJobState(job, WOOD_JOB_STATE.SAFETY_CHECK)
   autoState.currentStep = `wood:${job.state}`
   const terrainHazard = bot.entity.isInWater || bot.entity.isInLava || lowBreath()
-  const hazard = bot.health <= 10 ? 'low-health' : (!DISABLE_MINE_SAFETY_CHURN && terrainHazard ? 'water-risk' : null)
+  const threatHazard = currentWoodThreatReason()
+  const hazard = bot.health <= 10
+    ? 'low-health'
+    : (!DISABLE_MINE_SAFETY_CHURN && terrainHazard ? 'water-risk' : threatHazard)
   const owner = bot.players[job.owner]?.entity
   const ownerPos = safeEntityPosition(owner)
   const guard = woodJobGuardDecision({
@@ -962,10 +998,7 @@ async function autoWoodTick(job) {
   })
 
   if (hazard) {
-    setWoodJobState(job, guard.state, { reason: guard.reason })
-    autoState.currentStep = `wood:${job.state}`
-    autoState.lastError = `wood:${hazard}`
-    await retreatAndRecover(`wood safety: ${hazard}`, { anchor: owner, strictAnchor: true })
+    await handleWoodSafetyHazard(job, hazard, owner)
     return
   }
 
@@ -994,7 +1027,7 @@ async function autoWoodTick(job) {
   }
 
   await maybeUpgradeWoodAxe(job)
-  if (!isActiveWoodJob(job)) return
+  if (!isActiveWoodJob(job) || woodSafetyBusy) return
 
   let targetBlock = woodBlockFromKey(job.targetBlockPos)
   if (targetBlock && ownerPos.distanceTo(targetBlock.position) > WOOD_SCAN_RADIUS) {
@@ -1127,9 +1160,12 @@ function startAutoMine(owner, targetRaw, amountRaw) {
 
   const amount = parseAmount(amountRaw, 16, 128)
   if (target === 'wood') {
-    const startDecision = woodJobStartDecision({ inventoryTransferCount })
+    const startDecision = woodJobStartDecision({ inventoryTransferCount, backgroundActionBusy: survivalBusy })
     if (!startDecision.ok) {
-      return say('Wood job cannot start while an inventory transfer is still running. Retry after the deposit or stash completes.')
+      const reason = startDecision.reason === 'background-action-busy'
+        ? 'survival action'
+        : 'deposit or stash'
+      return say(`Wood job cannot start while a ${reason} is still running. Retry when it finishes.`)
     }
     const now = Date.now()
     woodJobSequence += 1
@@ -3572,7 +3608,12 @@ async function survivalTick() {
 async function safetyCheck() {
   if (ULTRA_MINIMAL_MODE) return
   if (!bot?.entity) return
-  if (autoState.job?.kind === 'wood') return
+  if (autoState.job?.kind === 'wood') {
+    const job = autoState.job
+    const threat = currentWoodThreatReason()
+    if (threat) await handleWoodSafetyHazard(job, threat, bot.players[job.owner]?.entity || null)
+    return
+  }
   if (Date.now() - lastSpawnAt < 40_000) return
 
   const now = Date.now()
@@ -3792,6 +3833,9 @@ function createBot() {
     }
 
     const sub = (args[0] || '').toLowerCase()
+    if (autoState.job?.kind === 'wood' && woodJobBlocksCommand(command, args)) {
+      return say(`Wood job ${autoState.job.id} owns movement and inventory actions. Owner ${autoState.job.owner} or an admin can cancel it first.`)
+    }
     const isMovementCommand = ['come', 'follow', 'stay', 'guard'].includes(command)
     const isHeavyAutoCommand = command === 'auto' && ['on', 'mine', 'craft', 'build', 'gather'].includes(sub)
     if (inReconnectStabilizationWindow() && (isMovementCommand || isHeavyAutoCommand)) {
@@ -4009,6 +4053,12 @@ function createBot() {
   bot.on('physicsTick', () => {
     if (!bot.entity) return
     const woodOwnsActions = autoState.job?.kind === 'wood'
+    if (woodOwnsActions && Date.now() - lastWoodThreatCheckAt >= 500) {
+      lastWoodThreatCheckAt = Date.now()
+      const job = autoState.job
+      const threat = currentWoodThreatReason()
+      if (threat) handleWoodSafetyHazard(job, threat, bot.players[job.owner]?.entity || null).catch(() => {})
+    }
 
     if (!woodOwnsActions && followTarget) {
       const entity = bot.players[followTarget]?.entity
