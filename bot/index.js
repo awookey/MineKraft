@@ -21,6 +21,7 @@ const {
   woodOperationToken,
   woodOperationIsCurrent,
   woodJobGuardDecision,
+  woodJobStartDecision,
   clusterWoodCandidates,
   chooseWoodTarget,
   assignWoodTarget,
@@ -105,6 +106,7 @@ let reconnecting = false
 let lastSpawnAt = 0
 let disconnectStreak = 0
 let reconnectStabilizeUntil = 0
+let inventoryTransferCount = 0
 
 const commandThrottleState = {
   lastByKey: new Map(),
@@ -679,25 +681,30 @@ function inventorySummary() {
 }
 
 async function depositToPlayer(username) {
-  const player = bot.players[username]?.entity
-  if (!player) return say(`I cannot see you, ${username}. Move near me and retry.`)
+  inventoryTransferCount += 1
+  try {
+    const player = bot.players[username]?.entity
+    if (!player) return say(`I cannot see you, ${username}. Move near me and retry.`)
 
-  const dist = bot.entity.position.distanceTo(player.position)
-  if (dist > 4.5) {
-    bot.pathfinder.setGoal(new goals.GoalNear(player.position.x, player.position.y, player.position.z, 2))
-    return say(`Moving to ${username} for handoff. Retry !silas deposit in a moment.`)
+    const dist = bot.entity.position.distanceTo(player.position)
+    if (dist > 4.5) {
+      bot.pathfinder.setGoal(new goals.GoalNear(player.position.x, player.position.y, player.position.z, 2))
+      return say(`Moving to ${username} for handoff. Retry !silas deposit in a moment.`)
+    }
+
+    const items = bot.inventory.items().filter(i => !i.name.includes('helmet') && !i.name.includes('chestplate') && !i.name.includes('leggings') && !i.name.includes('boots') && !i.name.includes('sword'))
+    if (!items.length) return say('Nothing to hand off yet.')
+
+    let dropped = 0
+    for (const stack of items.slice(0, 10)) {
+      await bot.tossStack(stack).catch(() => {})
+      dropped += 1
+    }
+
+    say(`Dropped ${dropped} item stacks for ${username}.`)
+  } finally {
+    inventoryTransferCount = Math.max(0, inventoryTransferCount - 1)
   }
-
-  const items = bot.inventory.items().filter(i => !i.name.includes('helmet') && !i.name.includes('chestplate') && !i.name.includes('leggings') && !i.name.includes('boots') && !i.name.includes('sword'))
-  if (!items.length) return say('Nothing to hand off yet.')
-
-  let dropped = 0
-  for (const stack of items.slice(0, 10)) {
-    await bot.tossStack(stack).catch(() => {})
-    dropped += 1
-  }
-
-  say(`Dropped ${dropped} item stacks for ${username}.`)
 }
 
 function autoSay(msg, minGapMs = 8000) {
@@ -1118,6 +1125,10 @@ function startAutoMine(owner, targetRaw, amountRaw) {
 
   const amount = parseAmount(amountRaw, 16, 128)
   if (target === 'wood') {
+    const startDecision = woodJobStartDecision({ inventoryTransferCount })
+    if (!startDecision.ok) {
+      return say('Wood job cannot start while an inventory transfer is still running. Retry after the deposit or stash completes.')
+    }
     const now = Date.now()
     woodJobSequence += 1
     autoState.job = createWoodJob({
@@ -2870,32 +2881,37 @@ async function ensureMiningBootstrap(job) {
 }
 
 async function stashToChest(owner) {
-  const chestState = await ensureSharedChestReady()
-  if (!chestState.ready || !chestState.chest) return false
+  inventoryTransferCount += 1
+  try {
+    const chestState = await ensureSharedChestReady()
+    if (!chestState.ready || !chestState.chest) return false
 
-  const container = await bot.openContainer(chestState.chest).catch(() => null)
-  if (!container) {
-    autoSay('Could not open chest for stash.')
-    return false
+    const container = await bot.openContainer(chestState.chest).catch(() => null)
+    if (!container) {
+      autoSay('Could not open chest for stash.')
+      return false
+    }
+
+    const keepPatterns = ['helmet', 'chestplate', 'leggings', 'boots', 'sword', 'pickaxe', 'axe', 'shield', 'crafting_table', 'chest']
+    const keepNames = new Set(['bread', 'cooked_beef', 'cooked_chicken', 'cooked_porkchop', 'cooked_mutton'])
+
+    let movedStacks = 0
+    for (const stack of bot.inventory.items()) {
+      if (!stack) continue
+      if (keepNames.has(stack.name)) continue
+      if (keepPatterns.some(p => stack.name.includes(p))) continue
+
+      await container.deposit(stack.type, stack.metadata, stack.count).catch(() => {})
+      movedStacks += 1
+      if (movedStacks >= 12) break
+    }
+
+    container.close()
+    if (movedStacks > 0) say(`Stashed ${movedStacks} stacks into shared chest.`)
+    return movedStacks > 0
+  } finally {
+    inventoryTransferCount = Math.max(0, inventoryTransferCount - 1)
   }
-
-  const keepPatterns = ['helmet', 'chestplate', 'leggings', 'boots', 'sword', 'pickaxe', 'axe', 'shield', 'crafting_table', 'chest']
-  const keepNames = new Set(['bread', 'cooked_beef', 'cooked_chicken', 'cooked_porkchop', 'cooked_mutton'])
-
-  let movedStacks = 0
-  for (const stack of bot.inventory.items()) {
-    if (!stack) continue
-    if (keepNames.has(stack.name)) continue
-    if (keepPatterns.some(p => stack.name.includes(p))) continue
-
-    await container.deposit(stack.type, stack.metadata, stack.count).catch(() => {})
-    movedStacks += 1
-    if (movedStacks >= 12) break
-  }
-
-  container.close()
-  if (movedStacks > 0) say(`Stashed ${movedStacks} stacks into shared chest.`)
-  return movedStacks > 0
 }
 
 async function cleanupPlacedCraftingTable() {

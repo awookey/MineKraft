@@ -117,6 +117,14 @@ function woodJobGuardDecision({ hazard = null, ownerAvailable = false, ownerDist
   return { state: WOOD_JOB_STATE.SCAN_LOCAL_WOOD, reason: null }
 }
 
+function woodJobStartDecision({ hasActiveJob = false, inventoryTransferCount = 0 } = {}) {
+  if (hasActiveJob) return { ok: false, reason: 'active-job' }
+  if (Math.max(0, Math.floor(finiteNumber(inventoryTransferCount))) > 0) {
+    return { ok: false, reason: 'inventory-transfer-active' }
+  }
+  return { ok: true, reason: null }
+}
+
 function normalizeCandidate(candidate) {
   const position = candidate?.position || candidate?.block?.position
   const key = candidate?.key || positionKey(position)
@@ -305,6 +313,7 @@ module.exports = {
   woodOperationToken,
   woodOperationIsCurrent,
   woodJobGuardDecision,
+  woodJobStartDecision,
   clusterWoodCandidates,
   isTargetBlacklisted,
   chooseWoodTarget,

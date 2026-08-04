@@ -12,6 +12,7 @@ const {
   woodOperationToken,
   woodOperationIsCurrent,
   woodJobGuardDecision,
+  woodJobStartDecision,
   clusterWoodCandidates,
   chooseWoodTarget,
   assignWoodTarget,
@@ -62,6 +63,17 @@ test('wood jobs require an explicit owner and carry a stable id', () => {
   assert.equal(job.id, 'wood-fixed')
   assert.equal(job.owner, 'Wookey')
   assert.equal(job.state, WOOD_JOB_STATE.PREPARE)
+})
+
+test('wood job start is blocked while inventory transfer state is active', () => {
+  assert.deepEqual(woodJobStartDecision({ inventoryTransferCount: 1 }), {
+    ok: false,
+    reason: 'inventory-transfer-active'
+  })
+  assert.deepEqual(woodJobStartDecision({ inventoryTransferCount: 0 }), {
+    ok: true,
+    reason: null
+  })
 })
 
 test('owner and radius guards block or regroup deterministically', () => {
