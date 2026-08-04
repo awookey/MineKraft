@@ -1258,7 +1258,7 @@ function startAutoMine(owner, targetRaw, amountRaw) {
   if (target === 'wood') {
     const startDecision = woodJobStartDecision({
       inventoryTransferCount,
-      backgroundActionBusy: survivalBusy || autoState.busy || backgroundActionCount > 0 || !!bot.autoEat?.isEating
+      backgroundActionBusy: survivalBusy || woodSafetyBusy || autoState.busy || backgroundActionCount > 0 || !!bot.autoEat?.isEating
     })
     if (!startDecision.ok) {
       const reason = startDecision.reason === 'background-action-busy'
