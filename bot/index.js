@@ -907,10 +907,11 @@ function scanReachableWoodCandidates(job, anchorPos, maxRadius = WOOD_SCAN_RADIU
   let pathProbeCount = 0
   return clustered.map((candidate) => {
     if (!candidate.visible) return { ...candidate, reachable: false, pathStatus: 'not-visible' }
+    let diggable = false
+    try { diggable = bot.canDigBlock(candidate.block) } catch {}
+    if (diggable) return { ...candidate, reachable: true, pathStatus: 'direct-diggable' }
     if (candidate.botDistance <= 3.2) {
-      let diggable = false
-      try { diggable = bot.canDigBlock(candidate.block) } catch {}
-      return { ...candidate, reachable: diggable, pathStatus: diggable ? 'near-diggable' : 'near-not-diggable' }
+      return { ...candidate, reachable: false, pathStatus: 'near-not-diggable' }
     }
     if (pathProbeCount >= WOOD_PATH_PROBE_LIMIT) return { ...candidate, reachable: false, pathStatus: 'not-probed' }
     pathProbeCount += 1
@@ -2621,7 +2622,7 @@ function hasAnySword() {
 }
 
 function hasAnyAxe() {
-  return !!pickBestItem(['netherite_axe', 'diamond_axe', 'iron_axe', 'stone_axe', 'wooden_axe'])
+  return !!pickBestItem(['netherite_axe', 'diamond_axe', 'iron_axe', 'stone_axe', 'golden_axe', 'wooden_axe'])
 }
 
 const PREFLIGHT_TOOL_REQUIREMENTS = {
