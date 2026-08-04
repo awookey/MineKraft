@@ -1191,12 +1191,15 @@ function startAutoMine(owner, targetRaw, amountRaw) {
 
   const amount = parseAmount(amountRaw, 16, 128)
   if (target === 'wood') {
-    const startDecision = woodJobStartDecision({ inventoryTransferCount, backgroundActionBusy: survivalBusy })
+    const startDecision = woodJobStartDecision({
+      inventoryTransferCount,
+      backgroundActionBusy: survivalBusy || autoState.busy
+    })
     if (!startDecision.ok) {
       const reason = startDecision.reason === 'background-action-busy'
-        ? 'survival action'
-        : 'deposit or stash'
-      return say(`Wood job cannot start while a ${reason} is still running. Retry when it finishes.`)
+        ? 'a background action'
+        : 'a deposit, stash, or chest operation'
+      return say(`Wood job cannot start while ${reason} is still running. Retry when it finishes.`)
     }
     const now = Date.now()
     woodJobSequence += 1
