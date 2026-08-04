@@ -54,6 +54,7 @@ function createWoodJob({ owner, amount, baseline = 0, now = Date.now(), id } = {
     targetBlockPos: null,
     targetTreeId: null,
     treeLockId: null,
+    treeKnownPositions: [],
     targetAttempts: {},
     lifetimeTargetFailures: {},
     blacklistUntil: {},
@@ -220,10 +221,32 @@ function clusterWoodCandidates(candidates = []) {
       a.position.z - b.position.z
     )[0]
     const treeId = `tree:${root.position.x},${root.position.z}`
-    for (const member of component) result.push({ ...member, treeId })
+    const treeMemberKeys = component.map(member => member.key).sort()
+    for (const member of component) result.push({ ...member, treeId, treeMemberKeys })
   }
 
   return result
+}
+
+function stabilizeWoodTreeLock(job, candidates = []) {
+  const known = new Set(job?.treeKnownPositions || [])
+  if (!job?.treeLockId || !known.size) return candidates
+
+  const matchingComponentIds = new Set()
+  for (const candidate of candidates) {
+    if ((candidate.treeMemberKeys || []).some(key => known.has(key))) matchingComponentIds.add(candidate.treeId)
+  }
+  if (!matchingComponentIds.size) return candidates
+
+  const expanded = new Set(known)
+  for (const candidate of candidates) {
+    if (!matchingComponentIds.has(candidate.treeId)) continue
+    for (const key of candidate.treeMemberKeys || []) expanded.add(key)
+  }
+  job.treeKnownPositions = [...expanded]
+  return candidates.map(candidate => matchingComponentIds.has(candidate.treeId)
+    ? { ...candidate, treeId: job.treeLockId }
+    : candidate)
 }
 
 function isTargetBlacklisted(job, key, now = Date.now()) {
@@ -272,7 +295,14 @@ function assignWoodTarget(job, candidate, now = Date.now()) {
   if (!job || !candidate) return null
   job.targetBlockPos = candidate.key || positionKey(candidate.position || candidate.block?.position)
   job.targetTreeId = candidate.treeId || null
-  if (candidate.treeId) job.treeLockId = candidate.treeId
+  if (candidate.treeId) {
+    if (job.treeLockId === candidate.treeId) {
+      job.treeKnownPositions = [...new Set([...(job.treeKnownPositions || []), ...(candidate.treeMemberKeys || [])])]
+    } else {
+      job.treeLockId = candidate.treeId
+      job.treeKnownPositions = [...new Set(candidate.treeMemberKeys || [job.targetBlockPos])]
+    }
+  }
   job.approachTicks = 0
   job.targetGeneration = Math.max(0, Math.floor(finiteNumber(job.targetGeneration))) + 1
   setWoodJobState(job, WOOD_JOB_STATE.APPROACH_TARGET, { now })
@@ -358,6 +388,7 @@ module.exports = {
   woodSafetyHazard,
   inventoryCanAcceptItem,
   clusterWoodCandidates,
+  stabilizeWoodTreeLock,
   isTargetBlacklisted,
   chooseWoodTarget,
   assignWoodTarget,

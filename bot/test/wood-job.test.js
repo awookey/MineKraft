@@ -18,6 +18,7 @@ const {
   woodSafetyHazard,
   inventoryCanAcceptItem,
   clusterWoodCandidates,
+  stabilizeWoodTreeLock,
   chooseWoodTarget,
   assignWoodTarget,
   recordWoodTargetFailure,
@@ -185,6 +186,25 @@ test('connected logs receive a stable tree id and the active tree remains prefer
   const job = createWoodJob({ owner: 'Wookey', amount: 4, id: 'wood-tree-lock' })
   job.treeLockId = secondTree[0].treeId
   assert.equal(chooseWoodTarget(job, clustered).treeId, secondTree[0].treeId)
+})
+
+test('tree lock survives canonical-root removal in a multi-column trunk', () => {
+  const initial = clusterWoodCandidates([
+    candidate(1, 64, 1), candidate(2, 64, 1),
+    candidate(1, 65, 1), candidate(2, 65, 1)
+  ])
+  const job = createWoodJob({ owner: 'Wookey', amount: 4, id: 'wood-wide-tree' })
+  assignWoodTarget(job, initial.find(item => item.key === '1,64,1'), 100)
+  const lockedId = job.treeLockId
+
+  const remaining = clusterWoodCandidates([
+    candidate(2, 64, 1), candidate(1, 65, 1), candidate(2, 65, 1)
+  ])
+  assert.notEqual(remaining[0].treeId, lockedId, 'raw component id changes after root removal')
+  const stabilized = stabilizeWoodTreeLock(job, remaining)
+  assert.equal(new Set(stabilized.map(item => item.treeId)).size, 1)
+  assert.equal(stabilized[0].treeId, lockedId)
+  assert.equal(chooseWoodTarget(job, stabilized).treeId, lockedId)
 })
 
 test('visible targets win over hidden targets when no tree is locked', () => {

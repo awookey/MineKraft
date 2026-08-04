@@ -27,6 +27,7 @@ const {
   woodSafetyHazard,
   inventoryCanAcceptItem,
   clusterWoodCandidates,
+  stabilizeWoodTreeLock,
   chooseWoodTarget,
   assignWoodTarget,
   clearWoodTarget,
@@ -890,7 +891,7 @@ function scanReachableWoodCandidates(job, anchorPos, maxRadius = WOOD_SCAN_RADIU
     })
   }
 
-  const clustered = clusterWoodCandidates(candidates)
+  const clustered = stabilizeWoodTreeLock(job, clusterWoodCandidates(candidates))
   clustered.sort((a, b) => {
     const aCurrent = a.key === job.targetBlockPos ? 0 : 1
     const bCurrent = b.key === job.targetBlockPos ? 0 : 1
@@ -3531,7 +3532,7 @@ async function retreatAndRecover(reason, opts = {}) {
   }
   // --- NEW CODE END: FIX 2 faster re-arm window ---
 
-  bot.pvp.stop()
+  if (bot.pvp) bot.pvp.stop()
 
   const anchor = opts.strictAnchor ? (opts.anchor || null) : (opts.anchor || nearestHumanPlayer())
   if (anchor) {
