@@ -165,6 +165,10 @@ function inventoryCanAcceptItem({ emptySlots = 0, items = [], itemName = '', sta
   return (items || []).some(item => item?.name === itemName && finiteNumber(item.count) + needed <= maximum)
 }
 
+function woodTargetNeedsApproach({ distance = Infinity, diggable = false, approachDistance = 2.2 } = {}) {
+  return !diggable && finiteNumber(distance, Infinity) > finiteNumber(approachDistance, 2.2)
+}
+
 function normalizeCandidate(candidate) {
   const position = candidate?.position || candidate?.block?.position
   const key = candidate?.key || positionKey(position)
@@ -387,6 +391,7 @@ module.exports = {
   woodThreatReason,
   woodSafetyHazard,
   inventoryCanAcceptItem,
+  woodTargetNeedsApproach,
   clusterWoodCandidates,
   stabilizeWoodTreeLock,
   isTargetBlacklisted,

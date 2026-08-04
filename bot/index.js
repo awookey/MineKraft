@@ -26,6 +26,7 @@ const {
   woodThreatReason,
   woodSafetyHazard,
   inventoryCanAcceptItem,
+  woodTargetNeedsApproach,
   clusterWoodCandidates,
   stabilizeWoodTreeLock,
   chooseWoodTarget,
@@ -1092,7 +1093,9 @@ async function autoWoodTick(job) {
   }
 
   const distance = bot.entity.position.distanceTo(targetBlock.position)
-  if (distance > 2.2) {
+  let targetDiggable = false
+  try { targetDiggable = bot.canDigBlock(targetBlock) } catch {}
+  if (woodTargetNeedsApproach({ distance, diggable: targetDiggable })) {
     job.approachTicks += 1
     if (job.approachTicks > WOOD_APPROACH_TICK_LIMIT) {
       return failCurrentWoodTarget(job, 'approach-timeout', `Wood job ${job.id}: path stalled; trying another trunk.`)

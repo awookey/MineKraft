@@ -17,6 +17,7 @@ const {
   woodThreatReason,
   woodSafetyHazard,
   inventoryCanAcceptItem,
+  woodTargetNeedsApproach,
   clusterWoodCandidates,
   stabilizeWoodTreeLock,
   chooseWoodTarget,
@@ -125,6 +126,12 @@ test('wood jobs block when neither an empty slot nor compatible stack capacity r
   assert.equal(inventoryCanAcceptItem({ emptySlots: 0, itemName: 'oak_log', items: [{ name: 'oak_log', count: 63 }], stackSize: 64 }), true)
   assert.equal(inventoryCanAcceptItem({ emptySlots: 0, itemName: 'oak_log', items: [{ name: 'oak_log', count: 64 }], stackSize: 64 }), false)
   assert.equal(inventoryCanAcceptItem({ emptySlots: 0, itemName: 'oak_log', items: [{ name: 'birch_log', count: 1 }], stackSize: 64 }), false)
+})
+
+test('wood jobs dig vertically reachable logs without pathing to their Y level', () => {
+  assert.equal(woodTargetNeedsApproach({ distance: 3, diggable: true }), false)
+  assert.equal(woodTargetNeedsApproach({ distance: 3, diggable: false }), true)
+  assert.equal(woodTargetNeedsApproach({ distance: 2, diggable: false }), false)
 })
 
 test('owner and radius guards block or regroup deterministically', () => {
