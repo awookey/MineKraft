@@ -149,6 +149,21 @@ function woodThreatReason(hostiles = []) {
   return `hostile-nearby:${nearby[0].name || 'unknown'}`
 }
 
+function woodSafetyHazard({ health = 20, inWater = false, inLava = false, lowBreath = false, onFire = false, threatReason = null } = {}) {
+  if (finiteNumber(health, 20) <= 10) return 'low-health'
+  if (inLava) return 'lava-risk'
+  if (onFire) return 'fire-risk'
+  if (inWater || lowBreath) return 'water-risk'
+  return threatReason || null
+}
+
+function inventoryCanAcceptItem({ emptySlots = 0, items = [], itemName = '', stackSize = 64, amount = 1 } = {}) {
+  if (Math.max(0, Math.floor(finiteNumber(emptySlots))) > 0) return true
+  const needed = Math.max(1, Math.floor(finiteNumber(amount, 1)))
+  const maximum = Math.max(1, Math.floor(finiteNumber(stackSize, 64)))
+  return (items || []).some(item => item?.name === itemName && finiteNumber(item.count) + needed <= maximum)
+}
+
 function normalizeCandidate(candidate) {
   const position = candidate?.position || candidate?.block?.position
   const key = candidate?.key || positionKey(position)
@@ -340,6 +355,8 @@ module.exports = {
   woodJobStartDecision,
   woodJobBlocksCommand,
   woodThreatReason,
+  woodSafetyHazard,
+  inventoryCanAcceptItem,
   clusterWoodCandidates,
   isTargetBlacklisted,
   chooseWoodTarget,

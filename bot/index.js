@@ -24,6 +24,8 @@ const {
   woodJobStartDecision,
   woodJobBlocksCommand,
   woodThreatReason,
+  woodSafetyHazard,
+  inventoryCanAcceptItem,
   clusterWoodCandidates,
   chooseWoodTarget,
   assignWoodTarget,
@@ -110,7 +112,7 @@ let disconnectStreak = 0
 let reconnectStabilizeUntil = 0
 let inventoryTransferCount = 0
 let woodSafetyBusy = false
-let lastWoodThreatCheckAt = 0
+let lastWoodSafetyCheckAt = 0
 
 const commandThrottleState = {
   lastByKey: new Map(),
@@ -759,6 +761,18 @@ function itemCount(itemName) {
   return (bot.inventory.items() || []).filter(i => i.name === itemName).reduce((sum, i) => sum + i.count, 0)
 }
 
+function inventoryCanAccept(itemName, amount = 1) {
+  let emptySlots = 0
+  try { emptySlots = bot.inventory.emptySlotCount() } catch {}
+  return inventoryCanAcceptItem({
+    emptySlots,
+    items: bot.inventory.items() || [],
+    itemName,
+    stackSize: mcDataRef?.itemsByName?.[itemName]?.stackSize || 64,
+    amount
+  })
+}
+
 function nearestAnchorForAuto() {
   const explicit = autoState.job?.owner && bot.players[autoState.job.owner]?.entity
   if (autoState.job?.kind === 'wood') return explicit || null
@@ -942,6 +956,19 @@ function currentWoodThreatReason() {
   return woodThreatReason(hostiles)
 }
 
+function currentWoodSafetyHazard() {
+  if (!bot?.entity) return null
+  const metadataFlags = Number(bot.entity.metadata?.[0] || 0)
+  return woodSafetyHazard({
+    health: bot.health,
+    inWater: !!bot.entity.isInWater,
+    inLava: !!bot.entity.isInLava,
+    lowBreath: lowBreath(),
+    onFire: !!bot.entity.onFire || (metadataFlags & 0x01) === 0x01,
+    threatReason: currentWoodThreatReason()
+  })
+}
+
 async function handleWoodSafetyHazard(job, reason, owner = null) {
   if (!isActiveWoodJob(job)) return false
   if (woodSafetyBusy) return true
@@ -983,11 +1010,7 @@ async function autoWoodTick(job) {
 
   setWoodJobState(job, WOOD_JOB_STATE.SAFETY_CHECK)
   autoState.currentStep = `wood:${job.state}`
-  const terrainHazard = bot.entity.isInWater || bot.entity.isInLava || lowBreath()
-  const threatHazard = currentWoodThreatReason()
-  const hazard = bot.health <= 10
-    ? 'low-health'
-    : (!DISABLE_MINE_SAFETY_CHURN && terrainHazard ? 'water-risk' : threatHazard)
+  const hazard = currentWoodSafetyHazard()
   const owner = bot.players[job.owner]?.entity
   const ownerPos = safeEntityPosition(owner)
   const guard = woodJobGuardDecision({
@@ -1057,6 +1080,14 @@ async function autoWoodTick(job) {
   }
 
   if (!targetBlock) return failCurrentWoodTarget(job, 'target-disappeared', `Wood job ${job.id}: target disappeared; rescanning.`)
+
+  if (!inventoryCanAccept(targetBlock.name)) {
+    setWoodJobState(job, WOOD_JOB_STATE.BLOCKED, { reason: 'inventory-full' })
+    autoState.currentStep = `wood:${job.state}`
+    autoState.lastError = 'wood:inventory-full'
+    bot.pathfinder.setGoal(null)
+    return autoSay(`Wood job ${job.id} blocked: inventory is full. Free a slot, then the job will resume.`, 8000)
+  }
 
   const distance = bot.entity.position.distanceTo(targetBlock.position)
   if (distance > 2.2) {
@@ -3610,8 +3641,8 @@ async function safetyCheck() {
   if (!bot?.entity) return
   if (autoState.job?.kind === 'wood') {
     const job = autoState.job
-    const threat = currentWoodThreatReason()
-    if (threat) await handleWoodSafetyHazard(job, threat, bot.players[job.owner]?.entity || null)
+    const hazard = currentWoodSafetyHazard()
+    if (hazard) await handleWoodSafetyHazard(job, hazard, bot.players[job.owner]?.entity || null)
     return
   }
   if (Date.now() - lastSpawnAt < 40_000) return
@@ -4053,11 +4084,11 @@ function createBot() {
   bot.on('physicsTick', () => {
     if (!bot.entity) return
     const woodOwnsActions = autoState.job?.kind === 'wood'
-    if (woodOwnsActions && Date.now() - lastWoodThreatCheckAt >= 500) {
-      lastWoodThreatCheckAt = Date.now()
+    if (woodOwnsActions && Date.now() - lastWoodSafetyCheckAt >= 500) {
+      lastWoodSafetyCheckAt = Date.now()
       const job = autoState.job
-      const threat = currentWoodThreatReason()
-      if (threat) handleWoodSafetyHazard(job, threat, bot.players[job.owner]?.entity || null).catch(() => {})
+      const hazard = currentWoodSafetyHazard()
+      if (hazard) handleWoodSafetyHazard(job, hazard, bot.players[job.owner]?.entity || null).catch(() => {})
     }
 
     if (!woodOwnsActions && followTarget) {

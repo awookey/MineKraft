@@ -15,6 +15,8 @@ const {
   woodJobStartDecision,
   woodJobBlocksCommand,
   woodThreatReason,
+  woodSafetyHazard,
+  inventoryCanAcceptItem,
   clusterWoodCandidates,
   chooseWoodTarget,
   assignWoodTarget,
@@ -105,6 +107,23 @@ test('wood threat policy prioritises close creepers, swarms, and nearby hostiles
     { name: 'zombie', distance: 2 },
     { name: 'creeper', distance: 4.5 }
   ]), 'creeper-close')
+})
+
+test('wood safety policy keeps health, fire, lava, water, and hostile interruption active', () => {
+  assert.equal(woodSafetyHazard({ health: 10 }), 'low-health')
+  assert.equal(woodSafetyHazard({ inLava: true }), 'lava-risk')
+  assert.equal(woodSafetyHazard({ onFire: true }), 'fire-risk')
+  assert.equal(woodSafetyHazard({ inWater: true }), 'water-risk')
+  assert.equal(woodSafetyHazard({ lowBreath: true }), 'water-risk')
+  assert.equal(woodSafetyHazard({ threatReason: 'creeper-close' }), 'creeper-close')
+  assert.equal(woodSafetyHazard(), null)
+})
+
+test('wood jobs block when neither an empty slot nor compatible stack capacity remains', () => {
+  assert.equal(inventoryCanAcceptItem({ emptySlots: 1, itemName: 'oak_log', items: [] }), true)
+  assert.equal(inventoryCanAcceptItem({ emptySlots: 0, itemName: 'oak_log', items: [{ name: 'oak_log', count: 63 }], stackSize: 64 }), true)
+  assert.equal(inventoryCanAcceptItem({ emptySlots: 0, itemName: 'oak_log', items: [{ name: 'oak_log', count: 64 }], stackSize: 64 }), false)
+  assert.equal(inventoryCanAcceptItem({ emptySlots: 0, itemName: 'oak_log', items: [{ name: 'birch_log', count: 1 }], stackSize: 64 }), false)
 })
 
 test('owner and radius guards block or regroup deterministically', () => {

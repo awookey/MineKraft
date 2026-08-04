@@ -122,8 +122,9 @@ Required controlled tests:
 8. Owner disappearance blocks the job.
 9. Non-owner cancellation is rejected; owner/admin cancellation succeeds.
 10. A second job cannot overwrite an active wood job.
-11. Nearly full inventory does not trigger automatic stash during the job.
-12. Bot disconnect or death cancels rather than silently resuming the job.
+11. A nearly full inventory does not trigger automatic stash; a completely full inventory blocks before another trunk is broken and resumes only after capacity is freed.
+12. Low health, fire, lava, water/breath risk, close creepers, and nearby hostile threats interrupt active approach/dig work through the wood-owned safety path.
+13. Bot disconnect or death cancels rather than silently resuming the job.
 
 ## Rollback
 
