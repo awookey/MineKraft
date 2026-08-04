@@ -995,7 +995,16 @@ async function handleWoodSafetyHazard(job, reason, owner = null) {
     setWoodJobState(job, WOOD_JOB_STATE.BLOCKED, { reason })
     autoState.currentStep = `wood:${job.state}`
     autoState.lastError = `wood:${reason}`
-    await retreatAndRecover(`wood safety: ${reason}`, { anchor: owner, strictAnchor: true })
+    const escapePosition = findNearbySafeEscapePosition(owner)
+    if (!escapePosition && ['lava-risk', 'water-risk', 'fire-risk'].includes(reason)) {
+      try { bot.setControlState('jump', true) } catch {}
+      setTimeout(() => { try { bot.setControlState('jump', false) } catch {} }, 1000)
+    }
+    await retreatAndRecover(`wood safety: ${reason}`, {
+      anchor: owner,
+      strictAnchor: true,
+      escapePosition
+    })
     return true
   } finally {
     woodSafetyBusy = false
@@ -1025,8 +1034,8 @@ async function autoWoodTick(job) {
   setWoodJobState(job, WOOD_JOB_STATE.SAFETY_CHECK)
   autoState.currentStep = `wood:${job.state}`
   const hazard = currentWoodSafetyHazard()
-  const owner = bot.players[job.owner]?.entity
-  const ownerPos = safeEntityPosition(owner)
+  let owner = bot.players[job.owner]?.entity
+  let ownerPos = safeEntityPosition(owner)
   const guard = woodJobGuardDecision({
     hazard,
     ownerAvailable: !!ownerPos,
@@ -1063,8 +1072,37 @@ async function autoWoodTick(job) {
     return autoSay(`Wood job ${job.id} blocked: retry budget exhausted. Cancel and start a fresh job after repositioning.`, 10000)
   }
 
+  const preUpgradeGeneration = job.targetGeneration
   await maybeUpgradeWoodAxe(job)
-  if (!isActiveWoodJob(job) || woodSafetyBusy) return
+  if (!isActiveWoodJob(job) || woodSafetyBusy || job.targetGeneration !== preUpgradeGeneration) return
+
+  const postUpgradeHazard = currentWoodSafetyHazard()
+  owner = bot.players[job.owner]?.entity
+  ownerPos = safeEntityPosition(owner)
+  const postUpgradeGuard = woodJobGuardDecision({
+    hazard: postUpgradeHazard,
+    ownerAvailable: !!ownerPos,
+    ownerDistance: ownerPos ? bot.entity.position.distanceTo(ownerPos) : Infinity,
+    maxRadius: autoState.maxRadius
+  })
+  if (postUpgradeHazard) {
+    await handleWoodSafetyHazard(job, postUpgradeHazard, owner)
+    return
+  }
+  if (postUpgradeGuard.reason === 'owner-unavailable') {
+    setWoodJobState(job, postUpgradeGuard.state, { reason: postUpgradeGuard.reason })
+    autoState.currentStep = `wood:${job.state}`
+    autoState.lastError = `wood:owner-unavailable:${job.owner}`
+    bot.pathfinder.setGoal(null)
+    return
+  }
+  if (postUpgradeGuard.state === WOOD_JOB_STATE.REGROUP_OWNER) {
+    setWoodJobState(job, postUpgradeGuard.state)
+    autoState.currentStep = `wood:${job.state}`
+    autoState.lastError = `wood:outside-owner-radius:${job.owner}`
+    bot.pathfinder.setGoal(new goals.GoalFollow(owner, 3), true)
+    return
+  }
 
   let targetBlock = woodBlockFromKey(job.targetBlockPos)
   if (targetBlock && ownerPos.distanceTo(targetBlock.position) > WOOD_SCAN_RADIUS) {
@@ -3537,6 +3575,39 @@ function nearbyHostiles(maxDistance = 10) {
     .filter(e => bot.entity.position.distanceTo(e.position) <= maxDistance)
 }
 
+function findNearbySafeEscapePosition(anchor = null, radius = 5) {
+  if (!bot?.entity?.position) return null
+  const origin = bot.entity.position.floored()
+  const hazards = new Set(['lava', 'water', 'fire', 'soul_fire', 'cactus', 'magma_block', 'campfire', 'soul_campfire'])
+  const hostiles = nearbyHostiles(10)
+  const candidates = []
+  for (let dx = -radius; dx <= radius; dx += 1) {
+    for (let dz = -radius; dz <= radius; dz += 1) {
+      if (Math.hypot(dx, dz) < 2) continue
+      for (let dy = -2; dy <= 2; dy += 1) {
+        const feetPos = origin.offset(dx, dy, dz)
+        const floor = bot.blockAt(feetPos.offset(0, -1, 0))
+        const feet = bot.blockAt(feetPos)
+        const head = bot.blockAt(feetPos.offset(0, 1, 0))
+        if (!floor || !feet || !head) continue
+        if (floor.boundingBox !== 'block' || hazards.has(floor.name)) continue
+        if (feet.boundingBox !== 'empty' || head.boundingBox !== 'empty') continue
+        if (hazards.has(feet.name) || hazards.has(head.name)) continue
+        const position = new Vec3(feetPos.x + 0.5, feetPos.y, feetPos.z + 0.5)
+        const ownerDistance = anchor?.position ? position.distanceTo(anchor.position) : 0
+        const hostileDistance = hostiles.reduce((minimum, entity) =>
+          Math.min(minimum, position.distanceTo(entity.position)), Infinity)
+        candidates.push({ position, ownerDistance, hostileDistance, travelDistance: position.distanceTo(bot.entity.position) })
+      }
+    }
+  }
+  candidates.sort((a, b) =>
+    b.hostileDistance - a.hostileDistance ||
+    a.ownerDistance - b.ownerDistance ||
+    a.travelDistance - b.travelDistance)
+  return candidates[0]?.position || null
+}
+
 async function retreatAndRecover(reason, opts = {}) {
   lastCombatRetreatAt = Date.now()
   const hardReason = String(reason || '')
@@ -3549,7 +3620,10 @@ async function retreatAndRecover(reason, opts = {}) {
   if (bot.pvp) bot.pvp.stop()
 
   const anchor = opts.strictAnchor ? (opts.anchor || null) : (opts.anchor || nearestHumanPlayer())
-  if (anchor) {
+  if (opts.escapePosition) {
+    const escape = opts.escapePosition
+    bot.pathfinder.setGoal(new goals.GoalNear(escape.x, escape.y, escape.z, 1))
+  } else if (anchor) {
     bot.pathfinder.setGoal(new goals.GoalFollow(anchor, 3), true)
   } else {
     const pos = bot.entity.position
