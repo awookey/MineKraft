@@ -1,33 +1,67 @@
 # Session Handoff
 
-Last updated: 2026-04-02
+Last updated: 2026-08-04
 
 ## Read this first
+
 1. `README.md`
 2. `docs/PROJECT-STATUS.md`
-3. Relevant code/config paths listed below
+3. `docs/phase-0-wood-spec.md`
+4. `docs/phase-0-technical-design.md`
+5. `docs/test-plan.md`
 
-## Current focus
-Preserve current bot work and operational state across session pruning.
+## Current state
 
-## Important files
-- `bot/index.js`
-- `docs/test-plan.md`
-- `docker-compose.yml`
-- `scripts/up.sh`
+Phase 0 operational recovery is complete.
 
-## Latest decisions / assumptions
-- Family-friendly default with admin-controlled mayhem mode.
-- Device-code auth is the preferred bot auth path.
+The live bot now runs from the canonical checkout at `/home/silas/.openclaw/workspace/MineKraft`, authenticates successfully, spawns, reports healthy, and uses the preserved external world/auth/data paths.
 
-## Next concrete step
-Before further bot edits, update this handoff with the intended behaviour change and expected verification command.
+Verified runtime image revision:
 
-## Verification after changes
-- `git status --short`
-- `./scripts/logs.sh silasbot`
-- relevant in-game or container smoke test after changes.
+- `72abe3fbd81fa89172ec52628081f7d9ca3d5b49`
 
-## Notes for future session
-- Treat chat as scratchpad only. Persist meaningful decisions here or in project docs before stopping.
-- If you change direction, update `docs/PROJECT-STATUS.md` first so 4am pruning does not erase the thread.
+The previous hand-punch wood edit is preserved in:
+
+- `stash@{0}: On main: wip/wood-hand-bootstrap-before-phase0`
+
+Do not apply or ship that stash by itself. Generic wood preflight can still invoke broad collection before `ensureMiningBootstrap()`.
+
+## Next concrete build
+
+Implement wood as a dedicated deterministic primitive:
+
+1. Bind to the named owner only; block if absent.
+2. Record starting wood inventory and count job-relative gains.
+3. Bypass generic planner, preflight, collectblock, combat bootstrap, and automatic stash behavior.
+4. Find a local reachable trunk.
+5. Punch locally when no axe exists.
+6. Upgrade tools opportunistically when local prerequisites allow.
+7. Use a job ID/cancellation token.
+8. Persist a target through bounded path/dig attempts and blacklist failed targets.
+9. Emit stable state and blocked-reason values.
+
+## Required verification
+
+Static:
+
+- `node --check bot/index.js`
+- `bash -n scripts/*.sh`
+- `git diff --check`
+- unit tests and CI once introduced
+
+Live acceptance:
+
+- existing logs in inventory
+- owner present and owner disconnect
+- reachable and inaccessible trunks
+- mixed species
+- cancel while pathing/digging
+- new job while one is active
+- nearly full inventory
+- restart during a job
+
+Record command, commit/image hash, inventory before/after, debug states, path failures, and result.
+
+## Operational warning
+
+The current host has Docker Compose v1.29.2. Recreating a container can fail with `KeyError: 'ContainerConfig'`. Preserve external mounts, remove only the stopped bot container, then create it cleanly. Never remove the Minecraft world or backup containers/data as a workaround.

@@ -17,7 +17,7 @@ Family-friendly Minecraft server with a personality bot that can switch to full 
 ## Quick start
 
 ```bash
-cd /home/silas/.openclaw/workspace/projects/minecraft-silas
+cd /home/silas/.openclaw/workspace/MineKraft
 cp .env.example .env
 # Edit .env for ops/whitelist/password/bot username
 ./scripts/up.sh
