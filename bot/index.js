@@ -11,6 +11,32 @@ const pvp = require('mineflayer-pvp').plugin
 const autoEat = require('mineflayer-auto-eat').loader
 const toolPlugin = require('mineflayer-tool').plugin
 const collectBlockPlugin = require('mineflayer-collectblock').plugin
+const {
+  WOOD_JOB_STATE,
+  createWoodJob,
+  setWoodJobState,
+  isWoodLikeName,
+  woodInventoryCount,
+  woodJobProgress,
+  isWoodJobComplete,
+  woodOperationToken,
+  woodOperationIsCurrent,
+  woodJobGuardDecision,
+  woodJobStartDecision,
+  woodJobBlocksCommand,
+  woodThreatReason,
+  woodSafetyHazard,
+  inventoryCanAcceptItem,
+  woodTargetNeedsApproach,
+  clusterWoodCandidates,
+  stabilizeWoodTreeLock,
+  chooseWoodTarget,
+  assignWoodTarget,
+  clearWoodTarget,
+  recordWoodTargetFailure,
+  recordWoodTargetSuccess,
+  cancelWoodJob
+} = require('./lib/wood-job')
 
 const dataDir = path.join(__dirname, 'data')
 const profilePath = path.join(dataDir, 'profiles.json')
@@ -87,6 +113,10 @@ let reconnecting = false
 let lastSpawnAt = 0
 let disconnectStreak = 0
 let reconnectStabilizeUntil = 0
+let inventoryTransferCount = 0
+let backgroundActionCount = 0
+let woodSafetyBusy = false
+let lastWoodSafetyCheckAt = 0
 
 const commandThrottleState = {
   lastByKey: new Map(),
@@ -108,6 +138,12 @@ const autoState = {
   keepDaytime: false,
   lastDaytimeSetAt: 0
 }
+
+let woodJobSequence = 0
+const WOOD_SCAN_RADIUS = 16
+const WOOD_APPROACH_TICK_LIMIT = 8
+const WOOD_PATH_PROBE_LIMIT = 8
+const WOOD_PATH_PROBE_TIMEOUT_MS = 75
 
 const classes = ['builder', 'scout', 'tank', 'alchemist']
 
@@ -655,25 +691,30 @@ function inventorySummary() {
 }
 
 async function depositToPlayer(username) {
-  const player = bot.players[username]?.entity
-  if (!player) return say(`I cannot see you, ${username}. Move near me and retry.`)
+  inventoryTransferCount += 1
+  try {
+    const player = bot.players[username]?.entity
+    if (!player) return say(`I cannot see you, ${username}. Move near me and retry.`)
 
-  const dist = bot.entity.position.distanceTo(player.position)
-  if (dist > 4.5) {
-    bot.pathfinder.setGoal(new goals.GoalNear(player.position.x, player.position.y, player.position.z, 2))
-    return say(`Moving to ${username} for handoff. Retry !silas deposit in a moment.`)
+    const dist = bot.entity.position.distanceTo(player.position)
+    if (dist > 4.5) {
+      bot.pathfinder.setGoal(new goals.GoalNear(player.position.x, player.position.y, player.position.z, 2))
+      return say(`Moving to ${username} for handoff. Retry !silas deposit in a moment.`)
+    }
+
+    const items = bot.inventory.items().filter(i => !i.name.includes('helmet') && !i.name.includes('chestplate') && !i.name.includes('leggings') && !i.name.includes('boots') && !i.name.includes('sword'))
+    if (!items.length) return say('Nothing to hand off yet.')
+
+    let dropped = 0
+    for (const stack of items.slice(0, 10)) {
+      await bot.tossStack(stack).catch(() => {})
+      dropped += 1
+    }
+
+    say(`Dropped ${dropped} item stacks for ${username}.`)
+  } finally {
+    inventoryTransferCount = Math.max(0, inventoryTransferCount - 1)
   }
-
-  const items = bot.inventory.items().filter(i => !i.name.includes('helmet') && !i.name.includes('chestplate') && !i.name.includes('leggings') && !i.name.includes('boots') && !i.name.includes('sword'))
-  if (!items.length) return say('Nothing to hand off yet.')
-
-  let dropped = 0
-  for (const stack of items.slice(0, 10)) {
-    await bot.tossStack(stack).catch(() => {})
-    dropped += 1
-  }
-
-  say(`Dropped ${dropped} item stacks for ${username}.`)
 }
 
 function autoSay(msg, minGapMs = 8000) {
@@ -724,8 +765,21 @@ function itemCount(itemName) {
   return (bot.inventory.items() || []).filter(i => i.name === itemName).reduce((sum, i) => sum + i.count, 0)
 }
 
+function inventoryCanAccept(itemName, amount = 1) {
+  let emptySlots = 0
+  try { emptySlots = bot.inventory.emptySlotCount() } catch {}
+  return inventoryCanAcceptItem({
+    emptySlots,
+    items: bot.inventory.items() || [],
+    itemName,
+    stackSize: mcDataRef?.itemsByName?.[itemName]?.stackSize || 64,
+    amount
+  })
+}
+
 function nearestAnchorForAuto() {
   const explicit = autoState.job?.owner && bot.players[autoState.job.owner]?.entity
+  if (autoState.job?.kind === 'wood') return explicit || null
   if (explicit) return explicit
   return nearestHumanPlayer()
 }
@@ -747,14 +801,6 @@ function blockIdsFromNames(names = []) {
 }
 
 
-function isWoodLikeName(name) {
-  const n = String(name || '').toLowerCase()
-  if (!n) return false
-  if (n.includes('leaves')) return false
-  if (n.startsWith('stripped_')) return false
-  return n.endsWith('_log') || n.endsWith('_stem') || n.endsWith('_hyphae') || n === 'bamboo_block'
-}
-
 function woodBlockNames() {
   if (!mcDataRef?.blocksByName) {
     return autoMineTargets.wood.blocks
@@ -766,13 +812,12 @@ function woodBlockNames() {
 
 function woodItemCount() {
   if (!bot?.inventory) return 0
-  return (bot.inventory.items() || [])
-    .filter(i => isWoodLikeName(i?.name))
-    .reduce((sum, i) => sum + (i?.count || 0), 0)
+  return woodInventoryCount(bot.inventory.items() || [], isWoodLikeName)
 }
 
 function autoJobProgressCount(job) {
   if (!job) return 0
+  if (job.kind === 'wood') return woodJobProgress(job, woodItemCount())
   if (job.target === 'wood') return woodItemCount()
   return itemCount(job.item)
 }
@@ -798,13 +843,378 @@ function findNearbyWoodBlock(point = null, maxRadius = 16) {
   return best?.block || null
 }
 
+function isActiveWoodJob(job) {
+  return !!job && autoState.job === job && autoState.enabled && job.kind === 'wood'
+}
+
+function woodBlockFromKey(key) {
+  const parts = String(key || '').split(',').map(Number)
+  if (parts.length !== 3 || parts.some(value => !Number.isFinite(value))) return null
+  const block = bot.blockAt(new Vec3(parts[0], parts[1], parts[2]))
+  return block && isWoodLikeName(block.name) ? block : null
+}
+
+function scanReachableWoodCandidates(job, anchorPos, maxRadius = WOOD_SCAN_RADIUS) {
+  if (!bot?.entity || !anchorPos) return []
+  const center = anchorPos.floored()
+  const blockIds = blockIdsFromNames(woodBlockNames())
+  if (!blockIds.length) return []
+  const positions = bot.findBlocks({
+    point: center,
+    matching: blockIds,
+    maxDistance: maxRadius,
+    count: 256
+  }) || []
+  const candidates = []
+
+  for (const position of positions) {
+    const block = bot.blockAt(position)
+    if (!block || !isWoodLikeName(block.name)) continue
+    const verticalOffset = block.position.y - center.y
+    if (verticalOffset < -4 || verticalOffset > 10) continue
+    const anchorDistance = anchorPos.distanceTo(block.position)
+    if (anchorDistance > maxRadius) continue
+    let visible = false
+    try { visible = bot.canSeeBlock(block) } catch {}
+    candidates.push({
+      block,
+      position: block.position,
+      anchorDistance,
+      botDistance: bot.entity.position.distanceTo(block.position),
+      visible
+    })
+  }
+
+  const clustered = stabilizeWoodTreeLock(job, clusterWoodCandidates(candidates))
+  clustered.sort((a, b) => {
+    const aCurrent = a.key === job.targetBlockPos ? 0 : 1
+    const bCurrent = b.key === job.targetBlockPos ? 0 : 1
+    if (aCurrent !== bCurrent) return aCurrent - bCurrent
+    const aLocked = job.treeLockId && a.treeId === job.treeLockId ? 0 : 1
+    const bLocked = job.treeLockId && b.treeId === job.treeLockId ? 0 : 1
+    if (aLocked !== bLocked) return aLocked - bLocked
+    if (a.visible !== b.visible) return a.visible ? -1 : 1
+    return a.position.y - b.position.y || a.anchorDistance - b.anchorDistance || a.botDistance - b.botDistance
+  })
+
+  let pathProbeCount = 0
+  return clustered.map((candidate) => {
+    if (!candidate.visible) return { ...candidate, reachable: false, pathStatus: 'not-visible' }
+    let diggable = false
+    try { diggable = bot.canDigBlock(candidate.block) } catch {}
+    if (diggable) return { ...candidate, reachable: true, pathStatus: 'direct-diggable' }
+    if (candidate.botDistance <= 3.2) {
+      return { ...candidate, reachable: false, pathStatus: 'near-not-diggable' }
+    }
+    if (pathProbeCount >= WOOD_PATH_PROBE_LIMIT) return { ...candidate, reachable: false, pathStatus: 'not-probed' }
+    pathProbeCount += 1
+    try {
+      const goal = new goals.GoalNear(candidate.position.x, candidate.position.y, candidate.position.z, 1)
+      const generator = bot.pathfinder.getPathFromTo(
+        bot.pathfinder.movements,
+        bot.entity.position,
+        goal,
+        { timeout: WOOD_PATH_PROBE_TIMEOUT_MS }
+      )
+      let result = null
+      for (const step of generator) {
+        result = step?.result || null
+        if (result?.status !== 'partial') break
+      }
+      return { ...candidate, reachable: result?.status === 'success', pathStatus: result?.status || 'unknown' }
+    } catch {
+      return { ...candidate, reachable: false, pathStatus: 'probe-error' }
+    }
+  })
+}
+
+async function maybeUpgradeWoodAxe(job) {
+  if (!isActiveWoodJob(job) || hasAnyAxe() || job.axeUpgradeAttempted) return
+  const plankNames = ['oak_planks', 'birch_planks', 'spruce_planks', 'jungle_planks', 'acacia_planks', 'dark_oak_planks', 'mangrove_planks', 'cherry_planks', 'pale_oak_planks']
+  const plankCount = plankNames.reduce((sum, name) => sum + itemCount(name), 0)
+  if (plankCount < 3 || itemCount('stick') < 2) return
+  const table = nearestCraftingTable(8)
+  if (!table || bot.entity.position.distanceTo(table.position) > 3.2) return
+
+  job.axeUpgradeAttempted = true
+  const result = await craftItem('wooden_axe', 1, table)
+  if (result?.ok && hasAnyAxe()) {
+    autoState.lastError = null
+    autoSay(`Wood job ${job.id}: crafted an axe from existing local materials.`, 6000)
+  }
+}
+
+function failCurrentWoodTarget(job, reason, message) {
+  const key = job.targetBlockPos
+  const result = recordWoodTargetFailure(job, key, { reason })
+  autoState.currentStep = `wood:${job.state}`
+  autoState.lastError = `${reason}:${key || 'none'}:attempt-${result.attempts}`
+  bot.pathfinder.setGoal(null)
+  if (message) autoSay(message, 6000)
+  return result
+}
+
+function currentWoodThreatReason() {
+  if (!bot?.entity) return null
+  const hostiles = nearbyHostiles(8).map(entity => ({
+    name: entity.name,
+    distance: bot.entity.position.distanceTo(entity.position)
+  }))
+  return woodThreatReason(hostiles)
+}
+
+function currentWoodSafetyHazard() {
+  if (!bot?.entity) return null
+  const metadataFlags = Number(bot.entity.metadata?.[0] || 0)
+  return woodSafetyHazard({
+    health: bot.health,
+    inWater: !!bot.entity.isInWater,
+    inLava: !!bot.entity.isInLava,
+    lowBreath: lowBreath(),
+    onFire: !!bot.entity.onFire || (metadataFlags & 0x01) === 0x01,
+    threatReason: currentWoodThreatReason()
+  })
+}
+
+async function handleWoodSafetyHazard(job, reason, owner = null) {
+  if (!isActiveWoodJob(job)) return false
+  if (woodSafetyBusy) return true
+  woodSafetyBusy = true
+  try {
+    job.targetGeneration = (job.targetGeneration || 0) + 1
+    try { bot.stopDigging() } catch {}
+    try { bot.pvp?.stop() } catch {}
+    bot.pathfinder.setGoal(null)
+    setWoodJobState(job, WOOD_JOB_STATE.BLOCKED, { reason })
+    autoState.currentStep = `wood:${job.state}`
+    autoState.lastError = `wood:${reason}`
+    const escapePosition = findNearbySafeEscapePosition(owner)
+    if (!escapePosition && ['lava-risk', 'water-risk', 'fire-risk'].includes(reason)) {
+      try { bot.setControlState('jump', true) } catch {}
+      setTimeout(() => { try { bot.setControlState('jump', false) } catch {} }, 1000)
+    }
+    await retreatAndRecover(`wood safety: ${reason}`, {
+      anchor: owner,
+      strictAnchor: true,
+      escapePosition
+    })
+    return true
+  } finally {
+    woodSafetyBusy = false
+  }
+}
+
+async function autoWoodTick(job) {
+  if (!isActiveWoodJob(job)) return
+  if (woodSafetyBusy) return
+  if (survivalBusy) {
+    setWoodJobState(job, WOOD_JOB_STATE.BLOCKED, { reason: 'background-action-draining' })
+    autoState.currentStep = `wood:${job.state}`
+    autoState.lastError = 'wood:background-action-draining'
+    bot.pathfinder.setGoal(null)
+    return
+  }
+  const currentWoodCount = woodItemCount()
+  job.lastProgress = woodJobProgress(job, currentWoodCount)
+
+  if (isWoodJobComplete(job, currentWoodCount)) {
+    setWoodJobState(job, WOOD_JOB_STATE.COMPLETE)
+    autoState.currentStep = `wood:${job.state}`
+    awardXp(job.owner, 120, 'auto-mine:wood')
+    return stopAutoJob(`Wood job ${job.id} complete: collected ${job.lastProgress}/${job.amount} new wood. Kept materials in inventory.`)
+  }
+
+  setWoodJobState(job, WOOD_JOB_STATE.SAFETY_CHECK)
+  autoState.currentStep = `wood:${job.state}`
+  const hazard = currentWoodSafetyHazard()
+  let owner = bot.players[job.owner]?.entity
+  let ownerPos = safeEntityPosition(owner)
+  const guard = woodJobGuardDecision({
+    hazard,
+    ownerAvailable: !!ownerPos,
+    ownerDistance: ownerPos ? bot.entity.position.distanceTo(ownerPos) : Infinity,
+    maxRadius: autoState.maxRadius
+  })
+
+  if (hazard) {
+    await handleWoodSafetyHazard(job, hazard, owner)
+    return
+  }
+
+  if (guard.reason === 'owner-unavailable') {
+    setWoodJobState(job, guard.state, { reason: guard.reason })
+    autoState.currentStep = `wood:${job.state}`
+    autoState.lastError = `wood:owner-unavailable:${job.owner}`
+    bot.pathfinder.setGoal(null)
+    return autoSay(`Wood job ${job.id} blocked: I cannot see owner ${job.owner}.`, 8000)
+  }
+
+  if (guard.state === WOOD_JOB_STATE.REGROUP_OWNER) {
+    setWoodJobState(job, guard.state)
+    autoState.currentStep = `wood:${job.state}`
+    autoState.lastError = `wood:outside-owner-radius:${job.owner}`
+    bot.pathfinder.setGoal(new goals.GoalFollow(owner, 3), true)
+    return autoSay(`Wood job ${job.id}: regrouping to owner ${job.owner}.`, 6000)
+  }
+
+  if (job.hardBlockedReason) {
+    setWoodJobState(job, WOOD_JOB_STATE.BLOCKED, { reason: job.hardBlockedReason })
+    autoState.currentStep = `wood:${job.state}`
+    autoState.lastError = `wood:${job.hardBlockedReason}`
+    bot.pathfinder.setGoal(null)
+    return autoSay(`Wood job ${job.id} blocked: retry budget exhausted. Cancel and start a fresh job after repositioning.`, 10000)
+  }
+
+  const preUpgradeGeneration = job.targetGeneration
+  await maybeUpgradeWoodAxe(job)
+  if (!isActiveWoodJob(job) || woodSafetyBusy || job.targetGeneration !== preUpgradeGeneration) return
+
+  const postUpgradeHazard = currentWoodSafetyHazard()
+  owner = bot.players[job.owner]?.entity
+  ownerPos = safeEntityPosition(owner)
+  const postUpgradeGuard = woodJobGuardDecision({
+    hazard: postUpgradeHazard,
+    ownerAvailable: !!ownerPos,
+    ownerDistance: ownerPos ? bot.entity.position.distanceTo(ownerPos) : Infinity,
+    maxRadius: autoState.maxRadius
+  })
+  if (postUpgradeHazard) {
+    await handleWoodSafetyHazard(job, postUpgradeHazard, owner)
+    return
+  }
+  if (postUpgradeGuard.reason === 'owner-unavailable') {
+    setWoodJobState(job, postUpgradeGuard.state, { reason: postUpgradeGuard.reason })
+    autoState.currentStep = `wood:${job.state}`
+    autoState.lastError = `wood:owner-unavailable:${job.owner}`
+    bot.pathfinder.setGoal(null)
+    return
+  }
+  if (postUpgradeGuard.state === WOOD_JOB_STATE.REGROUP_OWNER) {
+    setWoodJobState(job, postUpgradeGuard.state)
+    autoState.currentStep = `wood:${job.state}`
+    autoState.lastError = `wood:outside-owner-radius:${job.owner}`
+    bot.pathfinder.setGoal(new goals.GoalFollow(owner, 3), true)
+    return
+  }
+
+  let targetBlock = woodBlockFromKey(job.targetBlockPos)
+  if (targetBlock && ownerPos.distanceTo(targetBlock.position) > WOOD_SCAN_RADIUS) {
+    clearWoodTarget(job)
+    targetBlock = null
+    autoState.lastError = 'wood:target-left-owner-radius'
+  }
+  if (!targetBlock && job.targetBlockPos) {
+    recordWoodTargetSuccess(job, { key: job.targetBlockPos, treeId: job.targetTreeId })
+    job.lastProgress = woodJobProgress(job, woodItemCount())
+  }
+
+  if (!targetBlock) {
+    setWoodJobState(job, WOOD_JOB_STATE.SCAN_LOCAL_WOOD)
+    autoState.currentStep = `wood:${job.state}`
+    const candidates = scanReachableWoodCandidates(job, ownerPos)
+    const target = chooseWoodTarget(job, candidates)
+    if (!target) {
+      setWoodJobState(job, WOOD_JOB_STATE.BLOCKED, { reason: 'no-reachable-target-near-owner' })
+      autoState.currentStep = `wood:${job.state}`
+      autoState.lastError = 'wood:no-reachable-target-near-owner'
+      bot.pathfinder.setGoal(new goals.GoalFollow(owner, 2), true)
+      return autoSay(`Wood job ${job.id} blocked: no reachable nearby trunk. Move me closer to one.`, 7000)
+    }
+    assignWoodTarget(job, target)
+    targetBlock = target.block
+  }
+
+  if (!targetBlock) return failCurrentWoodTarget(job, 'target-disappeared', `Wood job ${job.id}: target disappeared; rescanning.`)
+
+  if (!inventoryCanAccept(targetBlock.name)) {
+    setWoodJobState(job, WOOD_JOB_STATE.BLOCKED, { reason: 'inventory-full' })
+    autoState.currentStep = `wood:${job.state}`
+    autoState.lastError = 'wood:inventory-full'
+    bot.pathfinder.setGoal(null)
+    return autoSay(`Wood job ${job.id} blocked: inventory is full. Free a slot, then the job will resume.`, 8000)
+  }
+
+  const distance = bot.entity.position.distanceTo(targetBlock.position)
+  let targetDiggable = false
+  try { targetDiggable = bot.canDigBlock(targetBlock) } catch {}
+  if (woodTargetNeedsApproach({ distance, diggable: targetDiggable })) {
+    job.approachTicks += 1
+    if (job.approachTicks > WOOD_APPROACH_TICK_LIMIT) {
+      return failCurrentWoodTarget(job, 'approach-timeout', `Wood job ${job.id}: path stalled; trying another trunk.`)
+    }
+    setWoodJobState(job, WOOD_JOB_STATE.APPROACH_TARGET)
+    autoState.currentStep = `wood:${job.state}`
+    autoState.lastError = null
+    bot.pathfinder.setGoal(new goals.GoalNear(targetBlock.position.x, targetBlock.position.y, targetBlock.position.z, 1))
+    return
+  }
+
+  setWoodJobState(job, WOOD_JOB_STATE.DIG_TARGET)
+  autoState.currentStep = `wood:${job.state}`
+  autoState.lastError = null
+  const operation = woodOperationToken(job)
+  const operationTreeId = job.targetTreeId
+  try {
+    let diggable = false
+    try { diggable = bot.canDigBlock(targetBlock) } catch {}
+    if (!diggable) return failCurrentWoodTarget(job, 'target-not-diggable', `Wood job ${job.id}: target is obstructed; trying another trunk.`)
+
+    await equipBestToolForBlock(targetBlock)
+    if (!isActiveWoodJob(job) || !woodOperationIsCurrent(job, operation)) return
+    const currentOwnerPos = safeEntityPosition(bot.players[job.owner]?.entity)
+    if (!currentOwnerPos || currentOwnerPos.distanceTo(targetBlock.position) > WOOD_SCAN_RADIUS) {
+      clearWoodTarget(job)
+      autoState.lastError = 'wood:target-left-owner-radius'
+      return
+    }
+
+    await bot.dig(targetBlock, true)
+    if (!isActiveWoodJob(job) || !woodOperationIsCurrent(job, operation)) return
+    recordWoodTargetSuccess(job, { key: operation.targetKey, treeId: operationTreeId })
+  } catch (err) {
+    if (!isActiveWoodJob(job) || !woodOperationIsCurrent(job, operation)) return
+    failCurrentWoodTarget(job, `dig-failed:${err?.message || 'unknown'}`, `Wood job ${job.id}: dig failed; retrying another reachable trunk.`)
+  }
+}
+
+function runLeasedBackgroundAction(action) {
+  backgroundActionCount += 1
+  return Promise.resolve()
+    .then(action)
+    .finally(() => { backgroundActionCount = Math.max(0, backgroundActionCount - 1) })
+}
+
 function stopAutoJob(message = 'Auto task cancelled.') {
-  if (message && !message.toLowerCase().includes('failed')) autoState.lastSuccess = message
+  const stoppedJob = autoState.job
+  const lowerMessage = String(message || '').toLowerCase()
+  if (message && !lowerMessage.includes('failed') && !lowerMessage.includes('cancelled') && !lowerMessage.includes('stopped')) {
+    autoState.lastSuccess = message
+  }
+  if (stoppedJob?.kind === 'wood') {
+    stoppedJob.targetGeneration = (stoppedJob.targetGeneration || 0) + 1
+    try { bot.stopDigging() } catch {}
+    try { bot.pvp?.stop() } catch {}
+  }
   autoState.job = null
   autoState.currentStep = null
   bot.pathfinder.setGoal(null)
-  cleanupPlacedCraftingTable().catch(() => {})
+  if (stoppedJob?.kind === 'wood') {
+    if (ENABLE_AUTOEAT_PLUGIN && bot.autoEat) bot.autoEat.enableAuto()
+  } else {
+    runLeasedBackgroundAction(() => cleanupPlacedCraftingTable()).catch(() => {})
+  }
   if (message) say(message)
+}
+
+function cancelActiveAutoJob(requester) {
+  const job = autoState.job
+  if (!job) return say('No active auto job.')
+  if (job.kind === 'wood') {
+    const result = cancelWoodJob(job, requester, { isAdmin: isAdmin(requester) })
+    if (!result.ok) return say(`Only owner ${job.owner} or an admin can cancel wood job ${job.id}.`)
+    return stopAutoJob(`Wood job ${job.id} cancelled by ${requester}.`)
+  }
+  return stopAutoJob('Auto job cancelled.')
 }
 
 function autoStatus() {
@@ -813,13 +1223,18 @@ function autoStatus() {
   const j = autoState.job
   const progress = j.item ? `${autoJobProgressCount(j)}/${j.amount}` : 'active'
   const material = j.material ? ` ${j.material}` : ''
-  say(`Auto mode ON. Job: ${j.kind} ${j.target}${material} (${progress}).`)
+  const identity = j.id ? ` ${j.id}` : ''
+  const state = j.state ? ` state=${j.state}` : ''
+  say(`Auto mode ON. Job:${identity} ${j.kind} ${j.target}${material} (${progress}).${state}`)
 }
 
 function autoDebugStatus() {
   const j = autoState.job
   if (!j) return say(`Auto debug: no active job. lastError=${autoState.lastError || 'none'}`)
-  say(`Auto debug: step=${autoState.currentStep || 'unknown'}, lastError=${autoState.lastError || 'none'}, lastSuccess=${autoState.lastSuccess || 'none'}`)
+  const woodDetails = j.kind === 'wood'
+    ? ` id=${j.id}, owner=${j.owner}, state=${j.state}, progress=${autoJobProgressCount(j)}/${j.amount}, target=${j.targetBlockPos || 'none'}, tree=${j.treeLockId || 'none'}, failures=${j.totalFailures}`
+    : ''
+  say(`Auto debug:${woodDetails} step=${autoState.currentStep || 'unknown'}, lastError=${autoState.lastError || 'none'}, lastSuccess=${autoState.lastSuccess || 'none'}`)
 }
 
 function startAutoMine(owner, targetRaw, amountRaw) {
@@ -827,26 +1242,65 @@ function startAutoMine(owner, targetRaw, amountRaw) {
   const target = (targetRaw || '').toLowerCase()
   const spec = autoMineTargets[target]
   if (!spec) return say('Use: !silas auto mine iron|coal|stone|wood|wool <amount>')
+  if (autoState.job && (target === 'wood' || autoState.job.kind === 'wood')) {
+    const activeId = autoState.job.id ? ` ${autoState.job.id}` : ''
+    return say(`Auto job${activeId} is already active. Cancel it before starting another.`)
+  }
+
+  const amount = parseAmount(amountRaw, 16, 128)
+  if (target === 'wood') {
+    const startDecision = woodJobStartDecision({
+      inventoryTransferCount,
+      backgroundActionBusy: survivalBusy || woodSafetyBusy || autoState.busy || backgroundActionCount > 0 || !!bot.autoEat?.isEating
+    })
+    if (!startDecision.ok) {
+      const reason = startDecision.reason === 'background-action-busy'
+        ? 'a background action'
+        : 'a deposit, stash, or chest operation'
+      return say(`Wood job cannot start while ${reason} is still running. Retry when it finishes.`)
+    }
+    if (ENABLE_AUTOEAT_PLUGIN && bot.autoEat) bot.autoEat.disableAuto()
+    const now = Date.now()
+    woodJobSequence += 1
+    autoState.job = createWoodJob({
+      owner,
+      amount,
+      baseline: woodItemCount(),
+      now,
+      id: `wood-${now.toString(36)}-${woodJobSequence.toString(36)}`
+    })
+    followTarget = null
+    guardTarget = null
+    try { bot.pvp?.stop() } catch {}
+    bot.pathfinder.setGoal(null)
+    autoState.currentStep = `wood:${autoState.job.state}`
+    autoState.lastError = null
+    return say(`Wood job ${autoState.job.id} started for ${owner}: collect ${amount} new wood. Hand-first, owner-local, no planner or stash.`)
+  }
 
   autoState.job = {
     kind: 'mine',
     target,
     item: spec.item,
     blocks: spec.blocks,
-    amount: parseAmount(amountRaw, 16, 128),
+    amount,
     owner,
-    goal: `mine ${parseAmount(amountRaw, 16, 128)} ${target}`,
+    goal: `mine ${amount} ${target}`,
     planPrepared: false,
     startedAt: Date.now()
   }
 
   autoState.currentStep = `prepare-mine:${target}`
   autoState.lastError = null
-  say(`Auto mining started: ${target} x${autoState.job.amount}.`) 
+  say(`Auto mining started: ${target} x${autoState.job.amount}.`)
 }
 
 function startAutoCraft(owner, itemRaw, amountRaw) {
   if (!autoState.enabled) return say('Auto mode is OFF. Use !silas auto on first.')
+  if (autoState.job?.kind === 'wood') {
+    const activeId = autoState.job.id ? ` ${autoState.job.id}` : ''
+    return say(`Auto job${activeId} is already active. Cancel it before starting another.`)
+  }
   const target = (itemRaw || '').toLowerCase()
   if (!mcDataRef?.itemsByName?.[target]) return say('Unknown craft item. Example: !silas auto craft iron_sword 1')
 
@@ -868,6 +1322,10 @@ function startAutoCraft(owner, itemRaw, amountRaw) {
 
 function startAutoBuild(owner, planRaw, materialRaw) {
   if (!autoState.enabled) return say('Auto mode is OFF. Use !silas auto on first.')
+  if (autoState.job?.kind === 'wood') {
+    const activeId = autoState.job.id ? ` ${autoState.job.id}` : ''
+    return say(`Auto job${activeId} is already active. Cancel it before starting another.`)
+  }
   const target = (planRaw || '').toLowerCase()
   if (!buildPlans[target]) return say('Use: !silas auto build hut|house|tower|wall [wood|stone]')
   const material = normalizeBuildMaterial(materialRaw)
@@ -2205,7 +2663,7 @@ function hasAnySword() {
 }
 
 function hasAnyAxe() {
-  return !!pickBestItem(['netherite_axe', 'diamond_axe', 'iron_axe', 'stone_axe', 'wooden_axe'])
+  return !!pickBestItem(['netherite_axe', 'diamond_axe', 'iron_axe', 'stone_axe', 'golden_axe', 'wooden_axe'])
 }
 
 const PREFLIGHT_TOOL_REQUIREMENTS = {
@@ -2554,32 +3012,37 @@ async function ensureMiningBootstrap(job) {
 }
 
 async function stashToChest(owner) {
-  const chestState = await ensureSharedChestReady()
-  if (!chestState.ready || !chestState.chest) return false
+  inventoryTransferCount += 1
+  try {
+    const chestState = await ensureSharedChestReady()
+    if (!chestState.ready || !chestState.chest) return false
 
-  const container = await bot.openContainer(chestState.chest).catch(() => null)
-  if (!container) {
-    autoSay('Could not open chest for stash.')
-    return false
+    const container = await bot.openContainer(chestState.chest).catch(() => null)
+    if (!container) {
+      autoSay('Could not open chest for stash.')
+      return false
+    }
+
+    const keepPatterns = ['helmet', 'chestplate', 'leggings', 'boots', 'sword', 'pickaxe', 'axe', 'shield', 'crafting_table', 'chest']
+    const keepNames = new Set(['bread', 'cooked_beef', 'cooked_chicken', 'cooked_porkchop', 'cooked_mutton'])
+
+    let movedStacks = 0
+    for (const stack of bot.inventory.items()) {
+      if (!stack) continue
+      if (keepNames.has(stack.name)) continue
+      if (keepPatterns.some(p => stack.name.includes(p))) continue
+
+      await container.deposit(stack.type, stack.metadata, stack.count).catch(() => {})
+      movedStacks += 1
+      if (movedStacks >= 12) break
+    }
+
+    container.close()
+    if (movedStacks > 0) say(`Stashed ${movedStacks} stacks into shared chest.`)
+    return movedStacks > 0
+  } finally {
+    inventoryTransferCount = Math.max(0, inventoryTransferCount - 1)
   }
-
-  const keepPatterns = ['helmet', 'chestplate', 'leggings', 'boots', 'sword', 'pickaxe', 'axe', 'shield', 'crafting_table', 'chest']
-  const keepNames = new Set(['bread', 'cooked_beef', 'cooked_chicken', 'cooked_porkchop', 'cooked_mutton'])
-
-  let movedStacks = 0
-  for (const stack of bot.inventory.items()) {
-    if (!stack) continue
-    if (keepNames.has(stack.name)) continue
-    if (keepPatterns.some(p => stack.name.includes(p))) continue
-
-    await container.deposit(stack.type, stack.metadata, stack.count).catch(() => {})
-    movedStacks += 1
-    if (movedStacks >= 12) break
-  }
-
-  container.close()
-  if (movedStacks > 0) say(`Stashed ${movedStacks} stacks into shared chest.`)
-  return movedStacks > 0
 }
 
 async function cleanupPlacedCraftingTable() {
@@ -2879,12 +3342,17 @@ async function autoTick() {
       return
     }
 
+    const job = autoState.job
+    if (job.kind === 'wood') {
+      await autoWoodTick(job)
+      return
+    }
+
     if (!MINIMAL_DISABLE_AUTOTICK_SAFETY && (bot.health <= 10 || bot.entity.isInWater || bot.entity.isInLava)) {
       await retreatAndRecover('auto safety')
       return
     }
 
-    const job = autoState.job
     autoState.currentStep = `tick:${job.kind}:${job.target}`
 
     // --- NEW CODE START: prerequisite planner gate (step 4) ---
@@ -3100,7 +3568,40 @@ function nearbyHostiles(maxDistance = 10) {
     .filter(e => bot.entity.position.distanceTo(e.position) <= maxDistance)
 }
 
-async function retreatAndRecover(reason) {
+function findNearbySafeEscapePosition(anchor = null, radius = 5) {
+  if (!bot?.entity?.position) return null
+  const origin = bot.entity.position.floored()
+  const hazards = new Set(['lava', 'water', 'fire', 'soul_fire', 'cactus', 'magma_block', 'campfire', 'soul_campfire'])
+  const hostiles = nearbyHostiles(10)
+  const candidates = []
+  for (let dx = -radius; dx <= radius; dx += 1) {
+    for (let dz = -radius; dz <= radius; dz += 1) {
+      if (Math.hypot(dx, dz) < 2) continue
+      for (let dy = -2; dy <= 2; dy += 1) {
+        const feetPos = origin.offset(dx, dy, dz)
+        const floor = bot.blockAt(feetPos.offset(0, -1, 0))
+        const feet = bot.blockAt(feetPos)
+        const head = bot.blockAt(feetPos.offset(0, 1, 0))
+        if (!floor || !feet || !head) continue
+        if (floor.boundingBox !== 'block' || hazards.has(floor.name)) continue
+        if (feet.boundingBox !== 'empty' || head.boundingBox !== 'empty') continue
+        if (hazards.has(feet.name) || hazards.has(head.name)) continue
+        const position = new Vec3(feetPos.x + 0.5, feetPos.y, feetPos.z + 0.5)
+        const ownerDistance = anchor?.position ? position.distanceTo(anchor.position) : 0
+        const hostileDistance = hostiles.reduce((minimum, entity) =>
+          Math.min(minimum, position.distanceTo(entity.position)), Infinity)
+        candidates.push({ position, ownerDistance, hostileDistance, travelDistance: position.distanceTo(bot.entity.position) })
+      }
+    }
+  }
+  candidates.sort((a, b) =>
+    b.hostileDistance - a.hostileDistance ||
+    a.ownerDistance - b.ownerDistance ||
+    a.travelDistance - b.travelDistance)
+  return candidates[0]?.position || null
+}
+
+async function retreatAndRecover(reason, opts = {}) {
   lastCombatRetreatAt = Date.now()
   const hardReason = String(reason || '')
   // --- NEW CODE START: FIX 2 faster re-arm window ---
@@ -3109,10 +3610,13 @@ async function retreatAndRecover(reason) {
   }
   // --- NEW CODE END: FIX 2 faster re-arm window ---
 
-  bot.pvp.stop()
+  if (bot.pvp) bot.pvp.stop()
 
-  const anchor = nearestHumanPlayer()
-  if (anchor) {
+  const anchor = opts.strictAnchor ? (opts.anchor || null) : (opts.anchor || nearestHumanPlayer())
+  if (opts.escapePosition) {
+    const escape = opts.escapePosition
+    bot.pathfinder.setGoal(new goals.GoalNear(escape.x, escape.y, escape.z, 1))
+  } else if (anchor) {
     bot.pathfinder.setGoal(new goals.GoalFollow(anchor, 3), true)
   } else {
     const pos = bot.entity.position
@@ -3138,10 +3642,12 @@ async function survivalTick() {
   survivalBusy = true
 
   try {
+    if (autoState.job?.kind === 'wood') return
     if (Date.now() - lastWeaponBootstrapAt > 20_000) {
       await ensureWeaponBootstrap().catch(() => {})
       lastWeaponBootstrapAt = Date.now()
     }
+    if (autoState.job?.kind === 'wood') return
 
     const activeJobKind = autoState.job?.kind || null
     if (activeJobKind !== 'mine') {
@@ -3231,6 +3737,12 @@ async function survivalTick() {
 async function safetyCheck() {
   if (ULTRA_MINIMAL_MODE) return
   if (!bot?.entity) return
+  if (autoState.job?.kind === 'wood') {
+    const job = autoState.job
+    const hazard = currentWoodSafetyHazard()
+    if (hazard) await handleWoodSafetyHazard(job, hazard, bot.players[job.owner]?.entity || null)
+    return
+  }
   if (Date.now() - lastSpawnAt < 40_000) return
 
   const now = Date.now()
@@ -3243,12 +3755,12 @@ async function safetyCheck() {
   while (recentPositions.length > 5) recentPositions.shift()
 
   if (bot.health <= 10) {
-    await retreatAndRecover('safety: low health')
+    await runLeasedBackgroundAction(() => retreatAndRecover('safety: low health'))
     return
   }
 
   if (bot.entity.isInLava || bot.entity.isInWater) {
-    await retreatAndRecover('safety: bad terrain')
+    await runLeasedBackgroundAction(() => retreatAndRecover('safety: bad terrain'))
     return
   }
 
@@ -3256,7 +3768,7 @@ async function safetyCheck() {
   if (lavaId) {
     const nearLava = bot.findBlock({ matching: lavaId, maxDistance: 3 })
     if (nearLava) {
-      await retreatAndRecover('safety: lava nearby')
+      await runLeasedBackgroundAction(() => retreatAndRecover('safety: lava nearby'))
       return
     }
   }
@@ -3284,7 +3796,7 @@ async function safetyCheck() {
   }
 
   const inventoryStacks = (bot.inventory.items() || []).length
-  if (inventoryStacks > 35) {
+  if (inventoryStacks > 35 && autoState.job?.kind !== 'wood') {
     await stashToChest(autoState.job?.owner || cfg.adminUsers[0] || bot.username)
   }
 
@@ -3325,7 +3837,7 @@ async function safetyCheck() {
     }
   }
 
-  if (spawnPosition && !followTarget) {
+  if (spawnPosition && !followTarget && !autoState.job) {
     const distFromSpawn = bot.entity.position.distanceTo(spawnPosition)
     if (distFromSpawn > 200) {
       bot.pathfinder.setGoal(new goals.GoalNear(spawnPosition.x, spawnPosition.y, spawnPosition.z, 4))
@@ -3369,6 +3881,9 @@ function createBot() {
   // --- NEW CODE START: FIX 3 noPath unblock + reroute ---
   bot.on('path_update', (results) => {
     if (results?.status === 'noPath') {
+      // Wood jobs own their goal lifecycle. Approach ticks and operation
+      // generations handle stale/no-path outcomes without blaming a new target.
+      if (autoState.job?.kind === 'wood') return
       bot.pathfinder.setGoal(null)
       autoState.lastError = 'noPath-blocked'
       autoSay('Cannot reach target, rerouting.', 8000)
@@ -3447,6 +3962,9 @@ function createBot() {
     }
 
     const sub = (args[0] || '').toLowerCase()
+    if (autoState.job?.kind === 'wood' && woodJobBlocksCommand(command, args)) {
+      return say(`Wood job ${autoState.job.id} owns movement and inventory actions. Owner ${autoState.job.owner} or an admin can cancel it first.`)
+    }
     const isMovementCommand = ['come', 'follow', 'stay', 'guard'].includes(command)
     const isHeavyAutoCommand = command === 'auto' && ['on', 'mine', 'craft', 'build', 'gather'].includes(sub)
     if (inReconnectStabilizationWindow() && (isMovementCommand || isHeavyAutoCommand)) {
@@ -3504,19 +4022,23 @@ function createBot() {
     if (command === 'inventory') return inventorySummary()
 
     if (command === 'deposit') {
+      if (autoState.job?.kind === 'wood') return say(`Wood job ${autoState.job.id} owns its inventory baseline. Cancel or complete it before depositing.`)
       depositToPlayer(username).catch(() => say('Could not complete deposit right now.'))
       return
     }
 
     if (command === 'stash') {
+      if (autoState.job?.kind === 'wood') return say(`Wood job ${autoState.job.id} owns its inventory baseline. Cancel or complete it before stashing.`)
       stashToChest(username).catch(() => say('Could not stash into chest right now.'))
       return
     }
 
     if (command === 'chest') {
+      inventoryTransferCount += 1
       ensureSharedChestReady().then(s => {
         if (s.ready) say('Shared chest ready.')
       }).catch(() => say('Could not prepare chest right now.'))
+        .finally(() => { inventoryTransferCount = Math.max(0, inventoryTransferCount - 1) })
       return
     }
 
@@ -3542,13 +4064,17 @@ function createBot() {
         return say('Auto mode ON. Use !silas auto mine|craft|build ...')
       }
       if (sub === 'off') {
+        if (autoState.job?.kind === 'wood' && username !== autoState.job.owner && !isAdmin(username)) {
+          return say(`Only owner ${autoState.job.owner} or an admin can stop wood job ${autoState.job.id}.`)
+        }
+        if (autoState.job?.kind === 'wood') cancelWoodJob(autoState.job, username, { isAdmin: isAdmin(username) })
         autoState.enabled = false
         stopAutoJob(null)
         return say('Auto mode OFF.')
       }
       if (sub === 'status') return autoStatus()
       if (sub === 'debug') return autoDebugStatus()
-      if (sub === 'cancel') return stopAutoJob('Auto job cancelled.')
+      if (sub === 'cancel') return cancelActiveAutoJob(username)
       if (sub === 'mine') return startAutoMine(username, args[1], args[2])
       if (sub === 'craft') return startAutoCraft(username, args[1], args[2])
       if (sub === 'build') return startAutoBuild(username, args[1], args[2])
@@ -3576,6 +4102,7 @@ function createBot() {
     }
 
     if (command === 'follow') {
+      if (autoState.job?.kind === 'wood') return say(`Wood job ${autoState.job.id} owns movement. Cancel it before changing follow mode.`)
       const targetName = args[0] || username
       const target = bot.players[targetName]?.entity
       if (!target) return say(`I cannot see ${targetName} right now.`)
@@ -3587,6 +4114,7 @@ function createBot() {
     }
 
     if (command === 'stay') {
+      if (autoState.job?.kind === 'wood') return say(`Wood job ${autoState.job.id} owns movement. Cancel it before using stay.`)
       followTarget = null
       guardTarget = null
       bot.pathfinder.setGoal(null)
@@ -3596,6 +4124,7 @@ function createBot() {
     }
 
     if (command === 'come') {
+      if (autoState.job?.kind === 'wood') return say(`Wood job ${autoState.job.id} owns movement. Cancel it before using come.`)
       if (isDuplicateComeWhilePathing(username)) {
         return say(`Already moving to you, ${username}. Give me a few seconds.`)
       }
@@ -3616,6 +4145,7 @@ function createBot() {
     }
 
     if (command === 'guard') {
+      if (autoState.job?.kind === 'wood') return say(`Wood job ${autoState.job.id} owns movement. Cancel it before enabling guard mode.`)
       const targetName = args[0] || username
       if (!bot.players[targetName]?.entity) return say(`I cannot see ${targetName}.`)
       guardTarget = targetName
@@ -3640,6 +4170,7 @@ function createBot() {
         return say('PvP disengaged.')
       }
       if (state === 'on') {
+        if (autoState.job?.kind === 'wood') return say(`Wood job ${autoState.job.id} owns combat and movement state. Cancel it before enabling PvP.`)
         if (activeMode !== 'mayhem') return say('PvP requires mayhem mode. Use !silas mode mayhem')
         const target = bot.nearestEntity(e => e.type === 'player' && e.username !== bot.username)
         if (!target) return say('No nearby PvP target found.')
@@ -3652,13 +4183,20 @@ function createBot() {
 
   bot.on('physicsTick', () => {
     if (!bot.entity) return
+    const woodOwnsActions = autoState.job?.kind === 'wood'
+    if (woodOwnsActions && Date.now() - lastWoodSafetyCheckAt >= 500) {
+      lastWoodSafetyCheckAt = Date.now()
+      const job = autoState.job
+      const hazard = currentWoodSafetyHazard()
+      if (hazard) handleWoodSafetyHazard(job, hazard, bot.players[job.owner]?.entity || null).catch(() => {})
+    }
 
-    if (followTarget) {
+    if (!woodOwnsActions && followTarget) {
       const entity = bot.players[followTarget]?.entity
       if (entity) bot.pathfinder.setGoal(new goals.GoalFollow(entity, 2), true)
     }
 
-    if (guardTarget && activeMode === 'mayhem') {
+    if (!woodOwnsActions && guardTarget && activeMode === 'mayhem') {
       const guardEntity = bot.players[guardTarget]?.entity
       if (!guardEntity) return
       const threat = bot.nearestEntity(e => e.type === 'player' && e.username !== guardTarget && e.username !== bot.username && e.position.distanceTo(guardEntity.position) < 5)
@@ -3671,9 +4209,17 @@ function createBot() {
     const tickIntervalMs = STABILITY_MODE ? (warmup ? 15000 : 6000) : (warmup ? 12000 : 3000)
     if (Date.now() - lastSurvivalTickAt > tickIntervalMs) {
       lastSurvivalTickAt = Date.now()
-      if (!ULTRA_MINIMAL_MODE && !STABILITY_MODE) survivalTick().catch(() => {})
+      if (!woodOwnsActions && !ULTRA_MINIMAL_MODE && !STABILITY_MODE) survivalTick().catch(() => {})
       autoTick().catch(() => {})
     }
+  })
+
+  bot.on('death', () => {
+    const job = autoState.job
+    if (job?.kind !== 'wood') return
+    setWoodJobState(job, WOOD_JOB_STATE.CANCELLED, { reason: 'death' })
+    autoState.lastError = `wood:cancelled:death:${job.id}`
+    stopAutoJob(`Wood job ${job.id} cancelled: bot died and its inventory baseline is no longer valid.`)
   })
 
   bot.on('kicked', reason => console.error('[silasbot] kicked:', reason))
@@ -3681,6 +4227,12 @@ function createBot() {
 
   bot.on('end', () => {
     clearReadiness()
+    if (autoState.job?.kind === 'wood') {
+      setWoodJobState(autoState.job, WOOD_JOB_STATE.CANCELLED, { reason: 'disconnect' })
+      autoState.lastError = `wood:cancelled:disconnect:${autoState.job.id}`
+      autoState.job = null
+      autoState.currentStep = null
+    }
     try { bot.removeAllListeners() } catch {}
     try { bot.pathfinder.setGoal(null) } catch {}
     try { bot.pvp.stop() } catch {}

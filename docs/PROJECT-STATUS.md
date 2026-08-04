@@ -4,7 +4,7 @@ Last updated: 2026-08-04
 
 ## Snapshot
 
-- Phase/status: Phase 0 recovery complete; deterministic wood-loop work is next.
+- Phase/status: Phase 0 recovery and hardening complete; Phase 1 deterministic wood-job candidate is under test.
 - Source of truth: `awookey/MineKraft`.
 - Canonical checkout and deployment directory: `/home/silas/.openclaw/workspace/MineKraft`.
 - Primary product goal: a family-friendly Minecraft server with a reliable Mineflayer companion/quest bot and admin-controlled mayhem mode.
@@ -43,15 +43,15 @@ Verified at 2026-08-04T13:07:10Z:
 - The old source directory `/home/silas/.openclaw/workspace/projects/minecraft-silas` still stores persistent runtime data and should not be deleted.
 - Docker Compose v1.29.2 has a `ContainerConfig` recreation bug with the current Docker engine. Clean bot recreation works after removing only the stopped bot container.
 - The `uuid` 11.1.1 security override is required until Mineflayer's transitive auth dependencies widen their supported ranges; CI and live cached-auth testing guard compatibility.
-- The dedicated deterministic wood primitive is not implemented yet.
-- Generic planner/preflight behavior still conflicts with the intended dedicated wood primitive.
+- The dedicated Phase 1 wood primitive is implemented on `phase1/deterministic-wood-job` but is not live until image and in-world acceptance gates pass.
+- The pure wood state module and regression suite pass locally; Mineflayer integration still requires candidate-image and controlled world verification.
 
 ## Next moves
 
-1. Build the dedicated owner-bound wood job outside generic planner/collectblock/stash behavior.
-2. Add baseline-relative progress, explicit state, job IDs/cancellation, reachability checks, bounded retries, and target blacklisting.
-3. Add unit tests and CI.
-4. Run and record controlled in-world acceptance tests against an exact commit/image hash.
+1. Complete adversarial review and CI for the Phase 1 wood candidate.
+2. Build an exact-revision bot image while retaining the Phase 0 rollback tag.
+3. Run and record controlled owner-local in-world acceptance tests.
+4. Merge only after Codex comments and post-deployment evidence are clean.
 
 ## Resume commands
 
