@@ -7,69 +7,77 @@ Last updated: 2026-08-04
 1. `README.md`
 2. `docs/PROJECT-STATUS.md`
 3. `docs/dependency-hardening.md`
-4. `docs/phase-0-wood-spec.md`
-5. `docs/phase-0-technical-design.md`
-6. `docs/test-plan.md`
+4. `docs/phase-1-wood-job.md`
+5. `docs/phase-0-wood-spec.md`
+6. `docs/phase-0-technical-design.md`
+7. `docs/test-plan.md`
 
 ## Current state
 
-Phase 0 operational recovery is complete.
+Phase 0 operational recovery, dependency hardening, and Codex follow-up are complete on `main`.
 
-The live bot now runs from the canonical checkout at `/home/silas/.openclaw/workspace/MineKraft`, authenticates successfully, spawns, reports healthy, and uses the preserved external world/auth/data paths.
-
-Verified runtime image revision:
+The live bot remains healthy on the validated dependency image revision:
 
 - `018d52117eb81cd50e7976792da94aa43b1723a0`
 
-Dependency state:
+The Phase 1 implementation candidate is on:
 
-- all direct dependencies current at verification time;
-- `npm audit --omit=dev`: zero known vulnerabilities;
-- dependency smoke and Bot CI added;
-- `uuid` 11.1.1 override retained and live-auth tested pending upstream range updates.
+- branch: `phase1/deterministic-wood-job`
+- primary integration: `bot/index.js`
+- pure state/selection module: `bot/lib/wood-job.js`
+- regression suite: `bot/test/wood-job.test.js`
+- design and acceptance contract: `docs/phase-1-wood-job.md`
 
-The previous hand-punch wood edit is preserved in:
+The candidate has not yet been deployed. Local syntax, ten wood regression tests, dependency smoke, zero-production-audit, shell syntax, Compose validation, and diff checks pass.
+
+## Phase 1 behaviour
+
+The dedicated wood job now:
+
+1. Binds to the requesting owner and blocks if that player is absent.
+2. Counts only wood gained after the job starts.
+3. Bypasses generic planner, preflight, collectblock, combat bootstrap, and automatic stash paths.
+4. Punches by hand when no axe exists and uses/crafts an axe only when local prerequisites already allow it.
+5. Uses a stable job ID and explicit states.
+6. Rejects non-owner cancellation and prevents another job from overwriting active wood work.
+7. Groups logs into tree components and persists the current tree/target.
+8. Probes reachability, bounds approach/dig retries, and temporarily blacklists failed targets.
+9. Cancels on bot disconnect rather than resuming against a stale inventory baseline.
+10. Exposes identity, progress, state, target, tree lock, and failures via status/debug commands.
+
+## Preserved work
+
+The earlier hand-punch experiment remains preserved as:
 
 - `stash@{0}: On main: wip/wood-hand-bootstrap-before-phase0`
 
-Do not apply or ship that stash by itself. Generic wood preflight can still invoke broad collection before `ensureMiningBootstrap()`.
+It has not been applied wholesale. Its useful hand-first intent was implemented selectively without reverting later authentication, dependency, image, and readiness fixes.
 
-## Next concrete build
+## Remaining gates
 
-Implement wood as a dedicated deterministic primitive:
+1. Complete adversarial implementation review and address findings.
+2. Commit and push the candidate.
+3. Pass Bot CI, CodeQL, and Codex review.
+4. Build a clean image labelled with the exact candidate revision.
+5. Retain `minecraft-silas_silasbot:rollback-phase0`.
+6. Recreate only `silas-mineflayer` using the proven Compose v1 workaround if required.
+7. Verify cached Microsoft authentication, spawn readiness, health, zero restarts, and image/source hash.
+8. Run the controlled acceptance matrix in `docs/phase-1-wood-job.md` with an owner present in-world.
+9. Update evidence and merge only after review comments are addressed.
+10. Re-check Codex/GitHub comments and post-merge main CI.
 
-1. Bind to the named owner only; block if absent.
-2. Record starting wood inventory and count job-relative gains.
-3. Bypass generic planner, preflight, collectblock, combat bootstrap, and automatic stash behavior.
-4. Find a local reachable trunk.
-5. Punch locally when no axe exists.
-6. Upgrade tools opportunistically when local prerequisites allow.
-7. Use a job ID/cancellation token.
-8. Persist a target through bounded path/dig attempts and blacklist failed targets.
-9. Emit stable state and blocked-reason values.
+## Static verification
 
-## Required verification
-
-Static:
-
-- `node --check bot/index.js`
-- `bash -n scripts/*.sh`
-- `git diff --check`
-- unit tests and CI once introduced
-
-Live acceptance:
-
-- existing logs in inventory
-- owner present and owner disconnect
-- reachable and inaccessible trunks
-- mixed species
-- cancel while pathing/digging
-- new job while one is active
-- nearly full inventory
-- restart during a job
-
-Record command, commit/image hash, inventory before/after, debug states, path failures, and result.
+```bash
+node --check bot/index.js
+node --check bot/lib/wood-job.js
+npm --prefix bot test
+npm --prefix bot audit --omit=dev
+bash -n scripts/*.sh
+git diff --check
+docker-compose config -q
+```
 
 ## Operational warning
 
-The current host has Docker Compose v1.29.2. Recreating a container can fail with `KeyError: 'ContainerConfig'`. Preserve external mounts, remove only the stopped bot container, then create it cleanly. Never remove the Minecraft world or backup containers/data as a workaround.
+The current host has Docker Compose v1.29.2. Recreating a container can fail with `KeyError: 'ContainerConfig'`. Preserve all external mounts, remove only the stopped bot container, then create only `silasbot`. Never remove or recreate the Minecraft world, backup service, auth cache, or persistent data as a workaround.
