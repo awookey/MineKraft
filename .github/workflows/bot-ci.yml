@@ -4,12 +4,18 @@ on:
   pull_request:
     paths:
       - "bot/**"
+      - "scripts/up.sh"
+      - "scripts/test-up-guards.sh"
+      - "docker-compose.yml"
       - ".github/workflows/bot-ci.yml"
   push:
     branches:
       - main
     paths:
       - "bot/**"
+      - "scripts/up.sh"
+      - "scripts/test-up-guards.sh"
+      - "docker-compose.yml"
       - ".github/workflows/bot-ci.yml"
 
 permissions:
@@ -23,10 +29,10 @@ jobs:
         working-directory: bot
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
@@ -43,3 +49,7 @@ jobs:
 
       - name: Reject known production vulnerabilities
         run: npm audit --omit=dev
+
+      - name: Test startup safety guards
+        working-directory: .
+        run: ./scripts/test-up-guards.sh

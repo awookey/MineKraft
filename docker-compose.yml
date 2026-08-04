@@ -21,7 +21,7 @@ services:
       SIMULATION_DISTANCE: "8"
       SPAWN_PROTECTION: "8"
       ENABLE_RCON: "TRUE"
-      RCON_PASSWORD: "${RCON_PASSWORD:-change_me}"
+      RCON_PASSWORD: "${RCON_PASSWORD:?RCON_PASSWORD must be set in .env}"
       OPS: "${MC_OPS:-}"
       WHITELIST: "${MC_WHITELIST:-}"
       OVERRIDE_SERVER_PROPERTIES: "true"
@@ -46,7 +46,7 @@ services:
       INITIAL_DELAY: "2m"
       RCON_HOST: minecraft
       RCON_PORT: "25575"
-      RCON_PASSWORD: "${RCON_PASSWORD:-change_me}"
+      RCON_PASSWORD: "${RCON_PASSWORD:?RCON_PASSWORD must be set in .env}"
       SRC_DIR: "/data"
       DEST_DIR: "/backups"
       BACKUP_NAME: "world"
