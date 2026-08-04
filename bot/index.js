@@ -16,6 +16,7 @@ const dataDir = path.join(__dirname, 'data')
 const profilePath = path.join(dataDir, 'profiles.json')
 const worldStatePath = path.join(dataDir, 'world-state.json')
 const skillsPath = path.join(dataDir, 'skills.json')
+const readinessPath = '/tmp/silasbot-ready'
 
 if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true })
 if (!fs.existsSync(profilePath)) fs.writeFileSync(profilePath, JSON.stringify({}, null, 2))
@@ -27,9 +28,24 @@ const cfg = {
   port: Number(process.env.MC_PORT || 25565),
   username: process.env.MC_BOT_USERNAME || 'SilasBot',
   auth: process.env.MC_AUTH || 'microsoft',
-  authFlow: process.env.MC_AUTH_FLOW || 'live',
+  authFlow: process.env.MC_AUTH_FLOW || 'sisu',
+  authTitle: process.env.MC_AUTH_TITLE || '',
+  deviceType: process.env.MC_DEVICE_TYPE || '',
   mode: process.env.SILAS_MODE || 'family', // family | mayhem
   adminUsers: (process.env.SILAS_ADMIN_USERS || '').split(',').map(s => s.trim()).filter(Boolean)
+}
+
+const resolvedAuthTitle = cfg.authTitle || (cfg.authFlow === 'sisu' ? Titles.MinecraftJava : '')
+const resolvedDeviceType = cfg.deviceType || (cfg.authFlow === 'sisu' ? 'Win32' : '')
+
+function clearReadiness() {
+  try { fs.unlinkSync(readinessPath) } catch (err) {
+    if (err?.code !== 'ENOENT') console.error('[silasbot] readiness cleanup failed:', err.message)
+  }
+}
+
+function markReady() {
+  fs.writeFileSync(readinessPath, `${new Date().toISOString()}\n`, { mode: 0o600 })
 }
 
 const useCollectBlockPlugin = String(process.env.USE_COLLECTBLOCK_PLUGIN || 'true').toLowerCase() !== 'false'
@@ -889,15 +905,32 @@ async function placeBlockFromInventory(itemName) {
   const stack = bot.inventory.items().find(i => i.name === itemName)
   if (!stack) return null
 
-  const reference = bot.findBlock({
+  const references = bot.findBlocks({
     matching: b => b && b.name !== 'air' && !b.name.includes('water') && !b.name.includes('lava'),
-    maxDistance: 4
-  })
-  if (!reference) return null
+    maxDistance: 4,
+    count: 24
+  }) || []
 
-  await bot.equip(stack, 'hand').catch(() => {})
-  await bot.placeBlock(reference, new Vec3(0, 1, 0)).catch(() => {})
-  return reference.position.offset(0, 1, 0)
+  for (const pos of references) {
+    const reference = bot.blockAt(pos)
+    if (!reference) continue
+
+    const targetPos = reference.position.offset(0, 1, 0)
+    const targetBlock = bot.blockAt(targetPos)
+    if (targetBlock && targetBlock.name !== 'air') continue
+    if (bot.entity.position.distanceTo(reference.position) > 4.5) continue
+
+    const equipped = await bot.equip(stack, 'hand').then(() => true).catch(() => false)
+    if (!equipped) continue
+
+    const placed = await bot.placeBlock(reference, new Vec3(0, 1, 0)).then(() => true).catch(() => false)
+    if (!placed) continue
+
+    const after = bot.blockAt(targetPos)
+    if (after && after.name === itemName) return targetPos
+  }
+
+  return null
 }
 
 async function placeCraftingTableFromInventory() {
@@ -3303,23 +3336,27 @@ async function safetyCheck() {
 // --- NEW CODE END: safety rails loop (step 2) ---
 
 function createBot() {
+  clearReadiness()
   const startupSkills = loadSkills()
   console.log(`[silasbot] loaded ${Object.keys(startupSkills).length} persisted skills`)
-  console.log('[silasbot] creating bot with microsoft auth/device code flow')
+  console.log(`[silasbot] creating bot with microsoft auth/device code flow flow=${cfg.authFlow} authTitle=${resolvedAuthTitle || 'default'} deviceType=${resolvedDeviceType || 'default'}`)
 
-  bot = mineflayer.createBot({
+  const botOptions = {
     host: cfg.host,
     port: cfg.port,
     username: cfg.username,
     auth: cfg.auth,
     flow: cfg.authFlow,
-    authTitle: Titles.MinecraftJava,
-    deviceType: 'Win32',
     version: '1.21.4',
     hideErrors: false,
     checkTimeoutInterval: 90_000,
     profilesFolder: path.join(__dirname, 'auth-cache')
-  })
+  }
+
+  if (resolvedAuthTitle) botOptions.authTitle = resolvedAuthTitle
+  if (resolvedDeviceType) botOptions.deviceType = resolvedDeviceType
+
+  bot = mineflayer.createBot(botOptions)
 
   bot.loadPlugin(pathfinder)
   if (ENABLE_PVP_PLUGIN) bot.loadPlugin(pvp)
@@ -3368,6 +3405,7 @@ function createBot() {
 
     say(`Silas online. Mode=${activeMode}. Use !silas help`)
     console.log('[silasbot] spawned')
+    markReady()
     // --- NEW CODE START: capture spawn anchor for safety radius ---
     spawnPosition = bot.entity.position.clone()
     // --- NEW CODE END: capture spawn anchor for safety radius ---
@@ -3645,6 +3683,7 @@ function createBot() {
   bot.on('error', err => console.error('[silasbot] error:', err.message))
 
   bot.on('end', () => {
+    clearReadiness()
     try { bot.removeAllListeners() } catch {}
     try { bot.pathfinder.setGoal(null) } catch {}
     try { bot.pvp.stop() } catch {}
