@@ -15,6 +15,7 @@ const {
   WOOD_JOB_STATE,
   createWoodJob,
   setWoodJobState,
+  isWoodLikeName,
   woodInventoryCount,
   woodJobProgress,
   isWoodJobComplete,
@@ -799,14 +800,6 @@ function blockIdsFromNames(names = []) {
   return names.map(n => mcDataRef.blocksByName[n]?.id).filter(Boolean)
 }
 
-
-function isWoodLikeName(name) {
-  const n = String(name || '').toLowerCase()
-  if (!n) return false
-  if (n.includes('leaves')) return false
-  if (n.startsWith('stripped_')) return false
-  return n.endsWith('_log') || n.endsWith('_stem') || n.endsWith('_hyphae') || n === 'bamboo_block'
-}
 
 function woodBlockNames() {
   if (!mcDataRef?.blocksByName) {

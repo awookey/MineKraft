@@ -6,6 +6,7 @@ const assert = require('node:assert/strict')
 const {
   WOOD_JOB_STATE,
   createWoodJob,
+  isWoodLikeName,
   woodInventoryCount,
   woodJobProgress,
   isWoodJobComplete,
@@ -61,6 +62,19 @@ test('wood inventory counting supports mixed species and excludes processed bloc
     { name: 'oak_planks', count: 16 }
   ], isWoodLike)
   assert.equal(count, 9)
+})
+
+test('wood block matching excludes crop, mushroom, and dripleaf stems', () => {
+  assert.equal(isWoodLikeName('oak_log'), true)
+  assert.equal(isWoodLikeName('crimson_stem'), true)
+  assert.equal(isWoodLikeName('warped_stem'), true)
+  assert.equal(isWoodLikeName('crimson_hyphae'), true)
+  assert.equal(isWoodLikeName('bamboo_block'), true)
+  assert.equal(isWoodLikeName('pumpkin_stem'), false)
+  assert.equal(isWoodLikeName('attached_melon_stem'), false)
+  assert.equal(isWoodLikeName('mushroom_stem'), false)
+  assert.equal(isWoodLikeName('big_dripleaf_stem'), false)
+  assert.equal(isWoodLikeName('stripped_crimson_stem'), false)
 })
 
 test('wood jobs require an explicit owner and carry a stable id', () => {

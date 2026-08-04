@@ -77,7 +77,18 @@ function setWoodJobState(job, state, { reason = null, now = Date.now() } = {}) {
   return job
 }
 
-function woodInventoryCount(items = [], isWoodLike = () => false) {
+function isWoodLikeName(name) {
+  const normalized = String(name || '').toLowerCase()
+  if (!normalized || normalized.includes('leaves') || normalized.startsWith('stripped_')) return false
+  return normalized.endsWith('_log') ||
+    normalized === 'crimson_stem' ||
+    normalized === 'warped_stem' ||
+    normalized === 'crimson_hyphae' ||
+    normalized === 'warped_hyphae' ||
+    normalized === 'bamboo_block'
+}
+
+function woodInventoryCount(items = [], isWoodLike = isWoodLikeName) {
   return (items || [])
     .filter(item => item && isWoodLike(item.name))
     .reduce((sum, item) => sum + Math.max(0, Math.floor(finiteNumber(item.count))), 0)
@@ -380,6 +391,7 @@ module.exports = {
   positionKey,
   createWoodJob,
   setWoodJobState,
+  isWoodLikeName,
   woodInventoryCount,
   woodJobProgress,
   isWoodJobComplete,
