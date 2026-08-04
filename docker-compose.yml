@@ -65,7 +65,7 @@ services:
       minecraft:
         condition: service_healthy
     env_file:
-      - ./.env
+      - ${SILAS_ENV_FILE:-./.env}
     volumes:
       - ${SILAS_AUTH_CACHE_DIR:-./bot/auth-cache}:/app/auth-cache
       - ${SILAS_BOT_DATA_DIR:-./bot/data}:/app/data
