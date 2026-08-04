@@ -917,7 +917,17 @@ function scanReachableWoodCandidates(job, anchorPos, maxRadius = WOOD_SCAN_RADIU
     pathProbeCount += 1
     try {
       const goal = new goals.GoalNear(candidate.position.x, candidate.position.y, candidate.position.z, 1)
-      const result = bot.pathfinder.getPathTo(bot.pathfinder.movements, goal, WOOD_PATH_PROBE_TIMEOUT_MS)
+      const generator = bot.pathfinder.getPathFromTo(
+        bot.pathfinder.movements,
+        bot.entity.position,
+        goal,
+        { timeout: WOOD_PATH_PROBE_TIMEOUT_MS }
+      )
+      let result = null
+      for (const step of generator) {
+        result = step?.result || null
+        if (result?.status !== 'partial') break
+      }
       return { ...candidate, reachable: result?.status === 'success', pathStatus: result?.status || 'unknown' }
     } catch {
       return { ...candidate, reachable: false, pathStatus: 'probe-error' }
