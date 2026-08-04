@@ -21,9 +21,11 @@ Verified at 2026-08-04T13:07:10Z:
 - Mineflayer emitted `[silasbot] spawned`.
 - RCON reported `SilasMcClaw` online.
 - Container `/app/index.js` hash matches canonical `bot/index.js`.
-- Running image revision label: `72abe3fbd81fa89172ec52628081f7d9ca3d5b49`.
+- Running image revision label: `018d52117eb81cd50e7976792da94aa43b1723a0`.
 - Compose working directory: `/home/silas/.openclaw/workspace/MineKraft`.
 - Existing world, backup, auth-cache, and bot-data directories remain externally mounted from the preserved runtime location.
+- Dependency hardening candidate `018d52117eb81cd50e7976792da94aa43b1723a0` passed clean install, dependency smoke, image smoke, cached Microsoft authentication, spawn, health, and RCON presence checks.
+- `npm audit --omit=dev` reports zero known production vulnerabilities after dependency hardening.
 
 ## Phase 0 changes
 
@@ -40,8 +42,8 @@ Verified at 2026-08-04T13:07:10Z:
 
 - The old source directory `/home/silas/.openclaw/workspace/projects/minecraft-silas` still stores persistent runtime data and should not be deleted.
 - Docker Compose v1.29.2 has a `ContainerConfig` recreation bug with the current Docker engine. Clean bot recreation works after removing only the stopped bot container.
-- `npm audit --omit=dev` reports 23 production findings: 15 moderate and 8 high.
-- There are no executable tests or GitHub Actions workflows yet.
+- The `uuid` 11.1.1 security override is required until Mineflayer's transitive auth dependencies widen their supported ranges; CI and live cached-auth testing guard compatibility.
+- The dedicated deterministic wood primitive is not implemented yet.
 - Generic planner/preflight behavior still conflicts with the intended dedicated wood primitive.
 
 ## Next moves
