@@ -6,9 +6,10 @@ Last updated: 2026-08-04
 
 1. `README.md`
 2. `docs/PROJECT-STATUS.md`
-3. `docs/phase-0-wood-spec.md`
-4. `docs/phase-0-technical-design.md`
-5. `docs/test-plan.md`
+3. `docs/dependency-hardening.md`
+4. `docs/phase-0-wood-spec.md`
+5. `docs/phase-0-technical-design.md`
+6. `docs/test-plan.md`
 
 ## Current state
 
@@ -18,7 +19,14 @@ The live bot now runs from the canonical checkout at `/home/silas/.openclaw/work
 
 Verified runtime image revision:
 
-- `72abe3fbd81fa89172ec52628081f7d9ca3d5b49`
+- `018d52117eb81cd50e7976792da94aa43b1723a0`
+
+Dependency state:
+
+- all direct dependencies current at verification time;
+- `npm audit --omit=dev`: zero known vulnerabilities;
+- dependency smoke and Bot CI added;
+- `uuid` 11.1.1 override retained and live-auth tested pending upstream range updates.
 
 The previous hand-punch wood edit is preserved in:
 
