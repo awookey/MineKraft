@@ -4,6 +4,15 @@ cd "$(dirname "$0")/.."
 
 ENV_FILE="${SILAS_ENV_FILE:-.env}"
 
+if command -v docker-compose >/dev/null 2>&1; then
+  COMPOSE=(docker-compose)
+elif docker compose version >/dev/null 2>&1; then
+  COMPOSE=(docker compose)
+else
+  echo "[!] Docker Compose is not installed."
+  exit 1
+fi
+
 if [[ ! -f "$ENV_FILE" ]]; then
   if [[ "$ENV_FILE" != ".env" ]]; then
     echo "[!] Environment file not found: $ENV_FILE"
@@ -17,7 +26,7 @@ fi
 
 # Ask Compose to perform dotenv parsing and interpolation, then inspect only the
 # resolved RCON fields. The Python process emits no configuration or secret.
-if ! SILAS_ENV_FILE="$ENV_FILE" docker-compose --env-file "$ENV_FILE" config | python3 -c '
+if ! SILAS_ENV_FILE="$ENV_FILE" "${COMPOSE[@]}" --env-file "$ENV_FILE" config | python3 -c '
 import json
 import re
 import sys
@@ -61,4 +70,4 @@ if [[ "$ENV_FILE" != ".env" ]]; then
   exit 1
 fi
 
-SILAS_ENV_FILE="$ENV_FILE" SILAS_BUILD_COMMIT="$SILAS_BUILD_COMMIT" docker-compose --env-file "$ENV_FILE" up -d --build
+SILAS_ENV_FILE="$ENV_FILE" SILAS_BUILD_COMMIT="$SILAS_BUILD_COMMIT" "${COMPOSE[@]}" --env-file "$ENV_FILE" up -d --build
