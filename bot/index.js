@@ -8,7 +8,7 @@ const { Titles } = require('prismarine-auth')
 const { pathfinder, goals, Movements } = require('mineflayer-pathfinder')
 const { Vec3 } = require('vec3')
 const pvp = require('mineflayer-pvp').plugin
-const autoEat = require('mineflayer-auto-eat').plugin
+const autoEat = require('mineflayer-auto-eat').loader
 const toolPlugin = require('mineflayer-tool').plugin
 const collectBlockPlugin = require('mineflayer-collectblock').plugin
 
@@ -3384,14 +3384,11 @@ function createBot() {
     reconnecting = false
     lastSpawnAt = Date.now()
     reconnectStabilizeUntil = Date.now() + 30_000
-    // --- NEW CODE START: FIX 1 plugin auto-eat ---
-    // mineflayer-auto-eat v4 API
+    // mineflayer-auto-eat v5 API
     if (ENABLE_AUTOEAT_PLUGIN && bot.autoEat) {
-      bot.autoEat.enable()
-      bot.autoEat.options.priority = 'foodPoints'
-      bot.autoEat.options.bannedFood = []
+      bot.autoEat.setOpts({ priority: 'foodPoints', bannedFood: [] })
+      bot.autoEat.enableAuto()
     }
-    // --- NEW CODE END: FIX 1 plugin auto-eat ---
     const mcData = require('minecraft-data')(bot.version)
     mcDataRef = mcData
     console.log('[silasbot] version:', bot.version)
