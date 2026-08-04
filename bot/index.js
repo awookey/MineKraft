@@ -111,6 +111,7 @@ let lastSpawnAt = 0
 let disconnectStreak = 0
 let reconnectStabilizeUntil = 0
 let inventoryTransferCount = 0
+let backgroundActionCount = 0
 let woodSafetyBusy = false
 let lastWoodSafetyCheckAt = 0
 
@@ -1130,6 +1131,13 @@ async function autoWoodTick(job) {
   }
 }
 
+function runLeasedBackgroundAction(action) {
+  backgroundActionCount += 1
+  return Promise.resolve()
+    .then(action)
+    .finally(() => { backgroundActionCount = Math.max(0, backgroundActionCount - 1) })
+}
+
 function stopAutoJob(message = 'Auto task cancelled.') {
   const stoppedJob = autoState.job
   const lowerMessage = String(message || '').toLowerCase()
@@ -1144,7 +1152,11 @@ function stopAutoJob(message = 'Auto task cancelled.') {
   autoState.job = null
   autoState.currentStep = null
   bot.pathfinder.setGoal(null)
-  if (stoppedJob?.kind !== 'wood') cleanupPlacedCraftingTable().catch(() => {})
+  if (stoppedJob?.kind === 'wood') {
+    if (ENABLE_AUTOEAT_PLUGIN && bot.autoEat) bot.autoEat.enableAuto()
+  } else {
+    runLeasedBackgroundAction(() => cleanupPlacedCraftingTable()).catch(() => {})
+  }
   if (message) say(message)
 }
 
@@ -1193,7 +1205,7 @@ function startAutoMine(owner, targetRaw, amountRaw) {
   if (target === 'wood') {
     const startDecision = woodJobStartDecision({
       inventoryTransferCount,
-      backgroundActionBusy: survivalBusy || autoState.busy
+      backgroundActionBusy: survivalBusy || autoState.busy || backgroundActionCount > 0 || !!bot.autoEat?.isEating
     })
     if (!startDecision.ok) {
       const reason = startDecision.reason === 'background-action-busy'
@@ -1201,6 +1213,7 @@ function startAutoMine(owner, targetRaw, amountRaw) {
         : 'a deposit, stash, or chest operation'
       return say(`Wood job cannot start while ${reason} is still running. Retry when it finishes.`)
     }
+    if (ENABLE_AUTOEAT_PLUGIN && bot.autoEat) bot.autoEat.disableAuto()
     const now = Date.now()
     woodJobSequence += 1
     autoState.job = createWoodJob({
