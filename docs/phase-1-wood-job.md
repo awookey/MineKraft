@@ -75,7 +75,7 @@ Approach attempts are bounded to eight auto ticks. Pathfinder `noPath`, approach
 - Follow, stay, come, guard, PvP, generic safety, and combat/bootstrap loops cannot overwrite wood-owned movement or actions.
 - Cancelling stops an in-flight dig and invalidates its target-generation token.
 - An administrator can cancel the job.
-- Disconnecting the bot cancels an active wood job rather than resuming it with a stale inventory baseline.
+- Disconnecting or dying cancels an active wood job rather than resuming it with a stale inventory baseline.
 
 ## Progress semantics
 
@@ -121,7 +121,7 @@ Required controlled tests:
 9. Non-owner cancellation is rejected; owner/admin cancellation succeeds.
 10. A second job cannot overwrite an active wood job.
 11. Nearly full inventory does not trigger automatic stash during the job.
-12. Bot disconnect cancels rather than silently resuming the job.
+12. Bot disconnect or death cancels rather than silently resuming the job.
 
 ## Rollback
 

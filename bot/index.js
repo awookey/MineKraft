@@ -883,14 +883,16 @@ function scanReachableWoodCandidates(job, anchorPos, maxRadius = WOOD_SCAN_RADIU
     return a.position.y - b.position.y || a.anchorDistance - b.anchorDistance || a.botDistance - b.botDistance
   })
 
-  return clustered.map((candidate, index) => {
+  let pathProbeCount = 0
+  return clustered.map((candidate) => {
     if (!candidate.visible) return { ...candidate, reachable: false, pathStatus: 'not-visible' }
     if (candidate.botDistance <= 3.2) {
       let diggable = false
       try { diggable = bot.canDigBlock(candidate.block) } catch {}
       return { ...candidate, reachable: diggable, pathStatus: diggable ? 'near-diggable' : 'near-not-diggable' }
     }
-    if (index >= WOOD_PATH_PROBE_LIMIT) return { ...candidate, reachable: false, pathStatus: 'not-probed' }
+    if (pathProbeCount >= WOOD_PATH_PROBE_LIMIT) return { ...candidate, reachable: false, pathStatus: 'not-probed' }
+    pathProbeCount += 1
     try {
       const goal = new goals.GoalNear(candidate.position.x, candidate.position.y, candidate.position.z, 1)
       const result = bot.pathfinder.getPathTo(bot.pathfinder.movements, goal, WOOD_PATH_PROBE_TIMEOUT_MS)
@@ -4029,6 +4031,14 @@ function createBot() {
       if (!woodOwnsActions && !ULTRA_MINIMAL_MODE && !STABILITY_MODE) survivalTick().catch(() => {})
       autoTick().catch(() => {})
     }
+  })
+
+  bot.on('death', () => {
+    const job = autoState.job
+    if (job?.kind !== 'wood') return
+    setWoodJobState(job, WOOD_JOB_STATE.CANCELLED, { reason: 'death' })
+    autoState.lastError = `wood:cancelled:death:${job.id}`
+    stopAutoJob(`Wood job ${job.id} cancelled: bot died and its inventory baseline is no longer valid.`)
   })
 
   bot.on('kicked', reason => console.error('[silasbot] kicked:', reason))
