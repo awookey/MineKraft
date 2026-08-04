@@ -3674,12 +3674,12 @@ async function safetyCheck() {
   while (recentPositions.length > 5) recentPositions.shift()
 
   if (bot.health <= 10) {
-    await retreatAndRecover('safety: low health')
+    await runLeasedBackgroundAction(() => retreatAndRecover('safety: low health'))
     return
   }
 
   if (bot.entity.isInLava || bot.entity.isInWater) {
-    await retreatAndRecover('safety: bad terrain')
+    await runLeasedBackgroundAction(() => retreatAndRecover('safety: bad terrain'))
     return
   }
 
@@ -3687,7 +3687,7 @@ async function safetyCheck() {
   if (lavaId) {
     const nearLava = bot.findBlock({ matching: lavaId, maxDistance: 3 })
     if (nearLava) {
-      await retreatAndRecover('safety: lava nearby')
+      await runLeasedBackgroundAction(() => retreatAndRecover('safety: lava nearby'))
       return
     }
   }
