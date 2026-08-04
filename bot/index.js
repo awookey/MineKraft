@@ -3831,11 +3831,13 @@ function createBot() {
     if (command === 'inventory') return inventorySummary()
 
     if (command === 'deposit') {
+      if (autoState.job?.kind === 'wood') return say(`Wood job ${autoState.job.id} owns its inventory baseline. Cancel or complete it before depositing.`)
       depositToPlayer(username).catch(() => say('Could not complete deposit right now.'))
       return
     }
 
     if (command === 'stash') {
+      if (autoState.job?.kind === 'wood') return say(`Wood job ${autoState.job.id} owns its inventory baseline. Cancel or complete it before stashing.`)
       stashToChest(username).catch(() => say('Could not stash into chest right now.'))
       return
     }
