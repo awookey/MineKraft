@@ -3936,9 +3936,11 @@ function createBot() {
     }
 
     if (command === 'chest') {
+      inventoryTransferCount += 1
       ensureSharedChestReady().then(s => {
         if (s.ready) say('Shared chest ready.')
       }).catch(() => say('Could not prepare chest right now.'))
+        .finally(() => { inventoryTransferCount = Math.max(0, inventoryTransferCount - 1) })
       return
     }
 
